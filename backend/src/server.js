@@ -2,6 +2,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { randomUUID } from "crypto";
 
 import { dynamoDB, TABLE_NAME } from "./dynamodb.js";
 
@@ -17,16 +18,42 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors({
-  origin: "http://localhost:5173"
-}));
+app.use(
+  cors({
+    origin: "http://localhost:5173"
+  })
+);
 
 app.use(express.json());
 
 const validPriorities = ["Low", "Medium", "High"];
 const validStatuses = ["Open", "In Progress", "Resolved"];
 
-// GET: Health check
+// --------------------------------------------------
+// ACTIVITY HISTORY HELPER
+// --------------------------------------------------
+
+const createActivity = ({
+  action,
+  description,
+  oldValue = null,
+  newValue = null
+}) => {
+  return {
+    activityId: randomUUID(),
+    action,
+    description,
+    performedBy: "System",
+    timestamp: new Date().toISOString(),
+    oldValue,
+    newValue
+  };
+};
+
+// --------------------------------------------------
+// HEALTH CHECK
+// --------------------------------------------------
+
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
@@ -35,7 +62,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// GET: Retrieve all tickets
+// --------------------------------------------------
+// GET ALL TICKETS
+// --------------------------------------------------
+
 app.get("/api/tickets", async (req, res, next) => {
   try {
     const result = await dynamoDB.send(
@@ -56,7 +86,54 @@ app.get("/api/tickets", async (req, res, next) => {
   }
 });
 
-// GET: Retrieve ticket by ID
+// --------------------------------------------------
+// GET ACTIVITY HISTORY FOR A TICKET
+// --------------------------------------------------
+
+app.get("/api/tickets/:id/activities", async (req, res, next) => {
+  try {
+    const ticketId = Number(req.params.id);
+
+    if (!Number.isSafeInteger(ticketId) || ticketId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket ID"
+      });
+    }
+
+    const result = await dynamoDB.send(
+      new GetCommand({
+        TableName: TABLE_NAME,
+        Key: { id: ticketId }
+      })
+    );
+
+    if (!result.Item) {
+      return res.status(404).json({
+        success: false,
+        message: "Ticket not found"
+      });
+    }
+
+    const activities = Array.isArray(result.Item.activityHistory)
+      ? result.Item.activityHistory
+      : [];
+
+    res.status(200).json({
+      success: true,
+      ticketId,
+      count: activities.length,
+      data: activities
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --------------------------------------------------
+// GET TICKET BY ID
+// --------------------------------------------------
+
 app.get("/api/tickets/:id", async (req, res, next) => {
   try {
     const ticketId = Number(req.params.id);
@@ -91,7 +168,10 @@ app.get("/api/tickets/:id", async (req, res, next) => {
   }
 });
 
-// POST: Create a new ticket
+// --------------------------------------------------
+// CREATE A NEW TICKET
+// --------------------------------------------------
+
 app.post("/api/tickets", async (req, res, next) => {
   try {
     const {
@@ -135,15 +215,35 @@ app.post("/api/tickets", async (req, res, next) => {
       });
     }
 
+    const ticketId = Date.now();
+
+    const creationActivity = createActivity({
+      action: "TICKET_CREATED",
+      description: "Ticket was created",
+      newValue: {
+        title: title.trim(),
+        priority: selectedPriority,
+        status: "Open"
+      }
+    });
+
     const newTicket = {
-      id: Date.now(),
+      id: ticketId,
       title: title.trim(),
       employee: employee.trim(),
       department: department.trim(),
       priority: selectedPriority,
       status: "Open",
       description: description.trim(),
-      date: new Date().toISOString().slice(0, 10)
+      date: new Date().toISOString().slice(0, 10),
+
+      // Ticket assignment defaults
+      assignedTo: null,
+      assignedAt: null,
+      assignmentStatus: "Unassigned",
+
+      // Activity history
+      activityHistory: [creationActivity]
     };
 
     await dynamoDB.send(
@@ -164,7 +264,10 @@ app.post("/api/tickets", async (req, res, next) => {
   }
 });
 
-// PUT: Update an existing ticket
+// --------------------------------------------------
+// UPDATE AN EXISTING TICKET
+// --------------------------------------------------
+
 app.put("/api/tickets/:id", async (req, res, next) => {
   try {
     const ticketId = Number(req.params.id);
@@ -269,16 +372,57 @@ app.put("/api/tickets/:id", async (req, res, next) => {
       });
     }
 
-    const updatedTicket = {
-      ...currentTicket,
-      ...updates
-    };
+    const normalizedUpdates = { ...updates };
 
     for (const field of Object.keys(stringLimits)) {
-      if (field in updates) {
-        updatedTicket[field] = updates[field].trim();
+      if (field in normalizedUpdates) {
+        normalizedUpdates[field] = normalizedUpdates[field].trim();
       }
     }
+
+    const updatedTicket = {
+      ...currentTicket,
+      ...normalizedUpdates
+    };
+
+    // Preserve existing activity history
+    const activityHistory = Array.isArray(currentTicket.activityHistory)
+      ? [...currentTicket.activityHistory]
+      : [];
+
+    // Record only fields that actually changed
+    for (const field of Object.keys(normalizedUpdates)) {
+      const oldValue = currentTicket[field] ?? null;
+      const newValue = normalizedUpdates[field];
+
+      if (oldValue === newValue) {
+        continue;
+      }
+
+      let action = "TICKET_UPDATED";
+      let description = `${field} was updated`;
+
+      if (field === "status") {
+        action = "STATUS_CHANGED";
+        description = `Status changed from ${oldValue} to ${newValue}`;
+      } else if (field === "priority") {
+        action = "PRIORITY_CHANGED";
+        description = `Priority changed from ${oldValue} to ${newValue}`;
+      } else {
+        description = `${field} changed`;
+      }
+
+      activityHistory.push(
+        createActivity({
+          action,
+          description,
+          oldValue,
+          newValue
+        })
+      );
+    }
+
+    updatedTicket.activityHistory = activityHistory;
 
     await dynamoDB.send(
       new PutCommand({
@@ -298,7 +442,100 @@ app.put("/api/tickets/:id", async (req, res, next) => {
   }
 });
 
-// DELETE: Delete an existing ticket
+// --------------------------------------------------
+// ASSIGN OR REASSIGN A TICKET
+// --------------------------------------------------
+
+app.put("/api/tickets/:id/assign", async (req, res, next) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const { assignedTo } = req.body;
+
+    if (!Number.isSafeInteger(ticketId) || ticketId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket ID"
+      });
+    }
+
+    if (
+      typeof assignedTo !== "string" ||
+      !assignedTo.trim() ||
+      assignedTo.trim().length > 120
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid support engineer identifier is required"
+      });
+    }
+
+    const result = await dynamoDB.send(
+      new GetCommand({
+        TableName: TABLE_NAME,
+        Key: { id: ticketId }
+      })
+    );
+
+    if (!result.Item) {
+      return res.status(404).json({
+        success: false,
+        message: "Ticket not found"
+      });
+    }
+
+    const currentTicket = result.Item;
+    const previousEngineer = currentTicket.assignedTo ?? null;
+    const newEngineer = assignedTo.trim();
+
+    const isReassignment = Boolean(previousEngineer);
+
+    const activity = createActivity({
+      action: isReassignment ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
+      description: isReassignment
+        ? `Ticket reassigned from ${previousEngineer} to ${newEngineer}`
+        : `Ticket assigned to ${newEngineer}`,
+      oldValue: previousEngineer,
+      newValue: newEngineer
+    });
+
+    const activityHistory = Array.isArray(currentTicket.activityHistory)
+      ? [...currentTicket.activityHistory]
+      : [];
+
+    activityHistory.push(activity);
+
+    const updatedTicket = {
+      ...currentTicket,
+      assignedTo: newEngineer,
+      assignedAt: new Date().toISOString(),
+      assignmentStatus: "Assigned",
+      activityHistory
+    };
+
+    await dynamoDB.send(
+      new PutCommand({
+        TableName: TABLE_NAME,
+        Item: updatedTicket,
+        ConditionExpression: "attribute_exists(id)"
+      })
+    );
+
+    res.status(200).json({
+      success: true,
+      message: isReassignment
+        ? "Ticket reassigned successfully"
+        : "Ticket assigned successfully",
+      data: updatedTicket
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --------------------------------------------------
+// DELETE AN EXISTING TICKET
+// --------------------------------------------------
+
 app.delete("/api/tickets/:id", async (req, res, next) => {
   try {
     const ticketId = Number(req.params.id);
@@ -342,7 +579,10 @@ app.delete("/api/tickets/:id", async (req, res, next) => {
   }
 });
 
-// Handle invalid routes
+// --------------------------------------------------
+// HANDLE INVALID ROUTES
+// --------------------------------------------------
+
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -350,7 +590,10 @@ app.use((req, res) => {
   });
 });
 
-// Handle unexpected errors
+// --------------------------------------------------
+// GLOBAL ERROR HANDLER
+// --------------------------------------------------
+
 app.use((err, req, res, next) => {
   console.error("Backend error:", err);
 
@@ -360,7 +603,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
+
 app.listen(PORT, () => {
   console.log(`Helpdesk backend running on port ${PORT}`);
   console.log(`DynamoDB table: ${TABLE_NAME}`);

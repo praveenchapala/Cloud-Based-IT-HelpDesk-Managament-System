@@ -680,3 +680,142 @@ body {
     justify-content: center;
   }
 }
+
+/* ResolveIT ticket activity timeline */
+.activity-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 18px;
+}
+
+.activity-count,
+.activity-performed-by {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.activity-history-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-history-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 88px;
+}
+
+.activity-history-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.activity-history-dot {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 1px solid #dbe5ff;
+  border-radius: 50%;
+  background: #f1f5ff;
+  color: #4169e1;
+}
+
+.activity-history-line {
+  width: 1px;
+  flex: 1;
+  min-height: 42px;
+  background: #e2e8f0;
+}
+
+.activity-history-content {
+  min-width: 0;
+  padding: 2px 0 22px;
+}
+
+.activity-history-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.activity-history-heading strong {
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.activity-history-heading > span {
+  color: #94a3b8;
+  font-size: 11px;
+  text-align: right;
+}
+
+.activity-history-content > p {
+  margin: 6px 0 8px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.activity-change-values {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.activity-old-value,
+.activity-new-value {
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.activity-old-value {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.activity-new-value {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.activity-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px 16px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.activity-empty-state strong {
+  color: #475569;
+  font-size: 14px;
+}
+
+.activity-empty-state p {
+  margin: 0;
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .activity-history-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}

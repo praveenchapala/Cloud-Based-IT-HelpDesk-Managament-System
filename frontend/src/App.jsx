@@ -42,6 +42,8 @@ import {
   createTicket,
   updateTicket,
   deleteTicket,
+  assignTicket,
+  getTicketActivities,
 } from "./services/api";
 
 import "./App.css";
@@ -77,6 +79,40 @@ function formatDate(dateValue) {
   });
 }
 
+function formatDateTime(value) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatActivityAction(action) {
+  const labels = {
+    TICKET_CREATED: "Ticket created",
+    TICKET_ASSIGNED: "Ticket assigned",
+    TICKET_REASSIGNED: "Ticket reassigned",
+    STATUS_CHANGED: "Status changed",
+    PRIORITY_CHANGED: "Priority changed",
+    TICKET_UPDATED: "Ticket updated",
+  };
+  return labels[action] || (action || "Activity").replaceAll("_", " ");
+}
+
+function formatActivityValue(value) {
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value)
+      .map(([key, item]) => `${key}: ${item ?? "—"}`)
+      .join(" · ");
+  }
+  return String(value);
+}
+
 function getTicketDate(ticket) {
   return ticket.date || ticket.createdAt || ticket.created_at || "";
 }
@@ -97,6 +133,12 @@ function App() {
   const [updatingTicketId, setUpdatingTicketId] = useState(null);
   const [deletingTicketId, setDeletingTicketId] = useState(null);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [assignmentTicket, setAssignmentTicket] = useState(null);
+  const [assignmentEmail, setAssignmentEmail] = useState("");
+  const [assigning, setAssigning] = useState(false);
+  const [activities, setActivities] = useState([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+  const [activitiesError, setActivitiesError] = useState("");
 
   async function loadTickets() {
     try {
@@ -120,6 +162,38 @@ function App() {
   useEffect(() => {
     loadTickets();
   }, []);
+
+  async function loadTicketActivities(ticketId) {
+    if (ticketId === null || ticketId === undefined) return;
+
+    try {
+      setActivitiesLoading(true);
+      setActivitiesError("");
+
+      // getTicketActivities already returns Axios response.data:
+      // { success, ticketId, count, data: [...] }
+      const response = await getTicketActivities(ticketId);
+      const activityRecords = response?.data;
+
+      setActivities(Array.isArray(activityRecords) ? activityRecords : []);
+    } catch (err) {
+      setActivitiesError(
+        err.response?.data?.message || "Unable to load ticket activity history."
+      );
+      setActivities([]);
+    } finally {
+      setActivitiesLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activePage === "Ticket Details" && selectedTicketId !== null) {
+      loadTicketActivities(selectedTicketId);
+    } else {
+      setActivities([]);
+      setActivitiesError("");
+    }
+  }, [activePage, selectedTicketId]);
 
   const stats = useMemo(() => {
     const total = tickets.length;
@@ -257,6 +331,9 @@ function App() {
       );
 
       setSuccess(`Ticket #${ticketId} status updated.`);
+      if (String(selectedTicketId) === String(ticketId)) {
+        await loadTicketActivities(ticketId);
+      }
     } catch (err) {
       setError(
         err.response?.data?.message || "Unable to update ticket status."
@@ -296,6 +373,53 @@ function App() {
       );
     } finally {
       setDeletingTicketId(null);
+    }
+  }
+
+  function openAssignment(ticket) {
+    setAssignmentTicket(ticket);
+    setAssignmentEmail(ticket.assignedTo || "");
+    setError("");
+    setSuccess("");
+  }
+
+  function closeAssignment() {
+    if (assigning) return;
+    setAssignmentTicket(null);
+    setAssignmentEmail("");
+  }
+
+  async function handleAssignTicket(event) {
+    event.preventDefault();
+    if (!assignmentTicket) return;
+
+    try {
+      setAssigning(true);
+      setError("");
+      setSuccess("");
+
+      const response = await assignTicket(assignmentTicket.id, assignmentEmail.trim());
+      const updatedTicket = unwrapResponse(response);
+      const assignedTicket = updatedTicket?.data ?? updatedTicket;
+
+      setTickets((previous) =>
+        previous.map((ticket) =>
+          String(ticket.id) === String(assignmentTicket.id)
+            ? { ...ticket, ...assignedTicket }
+            : ticket
+        )
+      );
+
+      setSuccess(`Ticket #${assignmentTicket.id} assigned to ${assignmentEmail.trim()}.`);
+      if (String(selectedTicketId) === String(assignmentTicket.id)) {
+        await loadTicketActivities(assignmentTicket.id);
+      }
+      setAssignmentTicket(null);
+      setAssignmentEmail("");
+    } catch (err) {
+      setError(err.response?.data?.message || "Unable to assign this ticket.");
+    } finally {
+      setAssigning(false);
     }
   }
 
@@ -500,6 +624,7 @@ function App() {
               onStatusChange={handleStatusChange}
               onDelete={handleDeleteTicket}
               onViewTicket={openTicket}
+              onAssign={openAssignment}
               updatingTicketId={updatingTicketId}
               deletingTicketId={deletingTicketId}
             />
@@ -513,8 +638,13 @@ function App() {
               onBack={() => navigate("Tickets")}
               onStatusChange={handleStatusChange}
               onDelete={handleDeleteTicket}
+              onAssign={openAssignment}
               updatingTicketId={updatingTicketId}
               deletingTicketId={deletingTicketId}
+              activities={activities}
+              activitiesLoading={activitiesLoading}
+              activitiesError={activitiesError}
+              onRefreshActivities={() => loadTicketActivities(selectedTicketId)}
             />
           )}
 
@@ -526,6 +656,64 @@ function App() {
               onCancel={() => navigate("Dashboard")}
               submitting={submitting}
             />
+          )}
+
+          {assignmentTicket && (
+            <div
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) closeAssignment();
+              }}
+              style={{
+                position: "fixed", inset: 0, zIndex: 1000,
+                background: "rgba(15, 23, 42, 0.48)",
+                display: "grid", placeItems: "center", padding: 20,
+              }}
+            >
+              <form
+                onSubmit={handleAssignTicket}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="assignment-modal-title"
+                style={{
+                  width: "min(100%, 440px)", background: "#fff",
+                  borderRadius: 16, padding: 24,
+                  boxShadow: "0 24px 70px rgba(15, 23, 42, 0.24)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "start" }}>
+                  <div>
+                    <h2 id="assignment-modal-title" style={{ margin: 0, fontSize: 20 }}>Assign support engineer</h2>
+                    <p style={{ margin: "8px 0 20px", color: "#64748b", fontSize: 14 }}>
+                      Ticket #{assignmentTicket.id}: {assignmentTicket.title}
+                    </p>
+                  </div>
+                  <button type="button" onClick={closeAssignment} disabled={assigning} aria-label="Close assignment dialog" style={{ border: 0, background: "transparent", fontSize: 22, color: "#64748b" }}>×</button>
+                </div>
+                <label htmlFor="assignment-email" style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                  Support engineer email
+                </label>
+                <input
+                  id="assignment-email"
+                  type="email"
+                  required
+                  maxLength={120}
+                  value={assignmentEmail}
+                  onChange={(event) => setAssignmentEmail(event.target.value)}
+                  placeholder="engineer@company.com"
+                  style={{ width: "100%", padding: "11px 12px", border: "1px solid #cbd5e1", borderRadius: 8, outlineColor: "#4169e1" }}
+                />
+                <p style={{ margin: "8px 0 20px", fontSize: 12, color: "#64748b" }}>
+                  This currently records the email as an identifier; it does not verify an engineer account.
+                </p>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <button type="button" className="button-secondary" onClick={closeAssignment} disabled={assigning}>Cancel</button>
+                  <button type="submit" className="button-primary" disabled={assigning || !assignmentEmail.trim()}>
+                    {assigning ? "Assigning..." : "Save assignment"}
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
 
           <footer className="page-footer">
@@ -814,6 +1002,7 @@ function TicketsPage({
   onStatusChange,
   onDelete,
   onViewTicket,
+  onAssign,
   updatingTicketId,
   deletingTicketId,
 }) {
@@ -890,6 +1079,7 @@ function TicketsPage({
         onStatusChange={onStatusChange}
         onDelete={onDelete}
         onViewTicket={onViewTicket}
+        onAssign={onAssign}
         updatingTicketId={updatingTicketId}
         deletingTicketId={deletingTicketId}
       />
@@ -912,6 +1102,7 @@ function TicketTable({
   onStatusChange,
   onDelete,
   onViewTicket,
+  onAssign,
   updatingTicketId,
   deletingTicketId,
 }) {
@@ -941,6 +1132,7 @@ function TicketTable({
             <th>Requested by</th>
             <th>Priority</th>
             <th>Status</th>
+            <th>Assigned engineer</th>
             <th>Date created</th>
             {!compact && <th>Actions</th>}
           </tr>
@@ -1001,9 +1193,27 @@ function TicketTable({
                   <StatusBadge status={ticket.status} />
                 )}
               </td>
+              <td>
+                {ticket.assignedTo ? (
+                  <div className="requester-cell">
+                    <span className="requester-avatar">{ticket.assignedTo.charAt(0).toUpperCase()}</span>
+                    <span>{ticket.assignedTo}</span>
+                  </div>
+                ) : (
+                  <span style={{ color: "#94a3b8", fontSize: 13 }}>Unassigned</span>
+                )}
+              </td>
               <td className="date-cell">{formatDate(getTicketDate(ticket))}</td>
               {!compact && (
                 <td>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => onAssign?.(ticket)}
+                    style={{ marginRight: 8, padding: "7px 10px", fontSize: 12 }}
+                  >
+                    {ticket.assignedTo ? "Reassign" : "Assign"}
+                  </button>
                   <button
                     className="delete-button"
                     onClick={() => onDelete(ticket.id)}
@@ -1028,8 +1238,13 @@ function TicketDetailsPage({
   onBack,
   onStatusChange,
   onDelete,
+  onAssign,
   updatingTicketId,
   deletingTicketId,
+  activities,
+  activitiesLoading,
+  activitiesError,
+  onRefreshActivities,
 }) {
   if (!ticket) {
     return (
@@ -1085,6 +1300,7 @@ function TicketDetailsPage({
               <div className="details-info-item"><span>Requested by</span><strong>{ticket.employee || "Unknown"}</strong></div>
               <div className="details-info-item"><span>Department</span><strong>{ticket.department || "General"}</strong></div>
               <div className="details-info-item"><span>Date submitted</span><strong>{createdDate}</strong></div>
+              <div className="details-info-item"><span>Assigned engineer</span><strong>{ticket.assignedTo || "Unassigned"}</strong></div>
             </div>
           </section>
 
@@ -1101,16 +1317,82 @@ function TicketDetailsPage({
               <div className="details-section-icon activity-icon"><Clock3 size={18} /></div>
               <div><h3>Ticket activity</h3><p>Recorded information available for this ticket</p></div>
             </div>
-            <div className="activity-entry">
-              <div className="activity-timeline-marker"><CheckCircle2 size={15} /></div>
-              <div className="activity-entry-copy">
-                <strong>Ticket created</strong>
-                <p>{ticket.employee || "The requester"} submitted this support request.</p>
-                <span>{createdDate}</span>
-              </div>
-              <span className="activity-entry-tag">Created</span>
+            <div className="activity-history-toolbar">
+              <span className="activity-count">
+                {activities.length} {activities.length === 1 ? "event" : "events"} recorded
+              </span>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={onRefreshActivities}
+                disabled={activitiesLoading}
+                style={{ padding: "7px 10px", fontSize: 12 }}
+              >
+                <RefreshCw size={14} className={activitiesLoading ? "spin" : ""} />
+                Refresh
+              </button>
             </div>
-            <p className="activity-note">Additional activity history will appear here as ticket updates are recorded.</p>
+
+            {activitiesLoading ? (
+              <div className="table-message">Loading ticket activity...</div>
+            ) : activitiesError ? (
+              <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
+                <AlertCircle size={16} />
+                <span>{activitiesError}</span>
+              </div>
+            ) : activities.length === 0 ? (
+              <div className="activity-empty-state">
+                <Clock3 size={22} />
+                <strong>No activity history found</strong>
+                <p>New ticket actions will appear here when they are recorded.</p>
+              </div>
+            ) : (
+              <div className="activity-history-list">
+                {activities.map((activity, index) => (
+                  <article className="activity-history-item" key={activity.activityId || `${activity.action}-${index}`}>
+                    <div className="activity-history-rail">
+                      <span className="activity-history-dot">
+                        {activity.action === "TICKET_CREATED" ? (
+                          <CheckCircle2 size={15} />
+                        ) : activity.action === "TICKET_ASSIGNED" || activity.action === "TICKET_REASSIGNED" ? (
+                          <Users size={15} />
+                        ) : activity.action === "STATUS_CHANGED" ? (
+                          <Activity size={15} />
+                        ) : (
+                          <Clock3 size={15} />
+                        )}
+                      </span>
+                      {index !== activities.length - 1 && <span className="activity-history-line" />}
+                    </div>
+                    <div className="activity-history-content">
+                      <div className="activity-history-heading">
+                        <strong>{formatActivityAction(activity.action)}</strong>
+                        <span>{formatDateTime(activity.timestamp)}</span>
+                      </div>
+                      <p>{activity.description || "Ticket activity recorded."}</p>
+                      {(activity.oldValue !== null && activity.oldValue !== undefined) ||
+                      (activity.newValue !== null && activity.newValue !== undefined) ? (
+                        <div className="activity-change-values">
+                          {activity.oldValue !== null && activity.oldValue !== undefined && (
+                            <span className="activity-old-value">{formatActivityValue(activity.oldValue)}</span>
+                          )}
+                          {activity.oldValue !== null && activity.oldValue !== undefined &&
+                           activity.newValue !== null && activity.newValue !== undefined && (
+                            <span aria-hidden="true">→</span>
+                          )}
+                          {activity.newValue !== null && activity.newValue !== undefined && (
+                            <span className="activity-new-value">{formatActivityValue(activity.newValue)}</span>
+                          )}
+                        </div>
+                      ) : null}
+                      <span className="activity-performed-by">
+                        Performed by: {activity.performedBy || "Unknown"}
+                      </span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
         </div>
 
@@ -1137,6 +1419,19 @@ function TicketDetailsPage({
             <div className="control-field">
               <label>Priority level</label>
               <span className={`priority-badge ${priority.toLowerCase()}`}><span />{priority}</span>
+            </div>
+            <div className="side-card-divider" />
+            <div className="control-field">
+              <label>Assigned engineer</label>
+              <strong style={{ display: "block", margin: "6px 0 10px", fontSize: 13, overflowWrap: "anywhere" }}>
+                {ticket.assignedTo || "Not assigned"}
+              </strong>
+              <button type="button" className="button-secondary" onClick={() => onAssign?.(ticket)}>
+                {ticket.assignedTo ? "Reassign engineer" : "Assign engineer"}
+              </button>
+              {ticket.assignedAt && (
+                <span className="control-hint">Assigned {new Date(ticket.assignedAt).toLocaleString("en-IN")}</span>
+              )}
             </div>
             <div className="side-card-divider" />
             <button
