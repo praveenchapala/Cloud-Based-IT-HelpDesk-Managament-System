@@ -1,6 +1,9 @@
 
 import axios from "axios";
 
+const TOKEN_KEY = "resolveit_token";
+const USER_KEY = "resolveit_user";
+
 const API = axios.create({
   baseURL: "http://localhost:5000/api",
   headers: {
@@ -8,49 +11,138 @@ const API = axios.create({
   },
 });
 
-// Get all tickets
+// Attach JWT to every protected API request.
+API.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem(TOKEN_KEY);
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+
+  return config;
+});
+
+// Clear expired or invalid authentication sessions.
+API.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(USER_KEY);
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+// Authentication helpers
+export const getAuthToken = () =>
+  sessionStorage.getItem(TOKEN_KEY);
+
+export const getStoredUser = () => {
+  try {
+    return JSON.parse(
+      sessionStorage.getItem(USER_KEY) || "null"
+    );
+  } catch {
+    return null;
+  }
+};
+
+export const setAuthSession = ({ token, user }) => {
+  sessionStorage.setItem(TOKEN_KEY, token);
+  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+};
+
+export const clearAuthSession = () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(USER_KEY);
+};
+
+// Authentication APIs
+export const registerUser = async (userData) => {
+  const response = await API.post("/auth/register", userData);
+  return response.data;
+};
+
+export const loginUser = async (credentials) => {
+  const response = await API.post("/auth/login", credentials);
+
+  const session = response.data.data;
+
+  setAuthSession(session);
+
+  return session;
+};
+
+// Ticket APIs
 export const getTickets = async () => {
   const response = await API.get("/tickets");
   return response.data;
 };
 
-// Get ticket by ID
 export const getTicketById = async (id) => {
   const response = await API.get(`/tickets/${id}`);
   return response.data;
 };
 
-// Get activity history for a ticket
-export const getTicketActivities = async (id) => {
-  const response = await API.get(`/tickets/${id}/activities`);
-  return response.data;
-};
-
-// Create a new ticket
 export const createTicket = async (ticketData) => {
   const response = await API.post("/tickets", ticketData);
   return response.data;
 };
 
-// Update an existing ticket
 export const updateTicket = async (id, updatedData) => {
-  const response = await API.put(`/tickets/${id}`, updatedData);
+  const response = await API.put(
+    `/tickets/${id}`,
+    updatedData
+  );
+
   return response.data;
 };
 
-// Delete a ticket
+export const assignTicket = async (id, assignedTo) => {
+  const response = await API.put(
+    `/tickets/${id}/assign`,
+    { assignedTo }
+  );
+
+  return response.data;
+};
+
 export const deleteTicket = async (id) => {
   const response = await API.delete(`/tickets/${id}`);
   return response.data;
 };
 
-// Assign or reassign a ticket to a support engineer
-export const assignTicket = async (id, assignedTo) => {
-  const response = await API.put(`/tickets/${id}/assign`, {
-    assignedTo,
-  });
+// Ticket activity API
+export const getTicketActivities = async (id) => {
+  const response = await API.get(
+    `/tickets/${id}/activities`
+  );
+
   return response.data;
 };
 
-// Export API instance
+// Notification APIs
+export const getNotifications = async () => {
+  const response = await API.get("/notifications");
+  return response.data;
+};
+
+export const markNotificationRead = async (id) => {
+  const response = await API.patch(
+    `/notifications/${id}/read`
+  );
+
+  return response.data;
+};
+
+export const markAllNotificationsRead = async () => {
+  const response = await API.patch(
+    "/notifications/read-all"
+  );
+
+  return response.data;
+};
+
 export default API;

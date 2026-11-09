@@ -13,7 +13,9 @@ const dataDirectory = path.resolve(__dirname, "../data");
 mkdirSync(dataDirectory, { recursive: true });
 
 // Create or connect to SQLite database
-const databasePath = path.join(dataDirectory, "resolveit.db");
+const databasePath =
+  process.env.RESOLVEIT_DB_PATH ||
+  path.join(dataDirectory, "resolveit.db");
 
 const db = new Database(databasePath);
 
@@ -42,3 +44,39 @@ console.log("SQLite database connected successfully.");
 console.log("Users table initialized successfully.");
 
 export default db;
+// --------------------------------------------------
+// NOTIFICATIONS TABLE
+// --------------------------------------------------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+
+    user_id TEXT NOT NULL,
+
+    ticket_id TEXT NOT NULL,
+
+    type TEXT NOT NULL,
+
+    title TEXT NOT NULL,
+
+    message TEXT NOT NULL,
+
+    is_read INTEGER NOT NULL DEFAULT 0
+      CHECK (is_read IN (0, 1)),
+
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+      REFERENCES users(id)
+      ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+  ON notifications(user_id, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+  ON notifications(user_id, is_read);
+`);
+
+console.log("Notifications table initialized successfully.");

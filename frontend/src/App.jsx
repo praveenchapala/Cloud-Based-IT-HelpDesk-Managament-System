@@ -1,5 +1,5 @@
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -44,20 +44,23 @@ import {
   deleteTicket,
   assignTicket,
   getTicketActivities,
+  getNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
 } from "./services/api";
 
 import "./App.css";
+import { useAuth } from "./context/AuthContext";
 
 const emptyForm = {
   title: "",
-  employee: "",
   department: "",
   priority: "Medium",
   description: "",
 };
 
 const statusOptions = ["Open", "In Progress", "Resolved"];
-const priorityOptions = ["Low", "Medium", "High"];
+const priorityOptions = ["Low", "Medium", "High", "Critical"];
 
 function unwrapResponse(response) {
   return response?.data ?? response;
@@ -118,6 +121,21 @@ function getTicketDate(ticket) {
 }
 
 function App() {
+  const { user, logout } = useAuth();
+
+  const displayName = user?.name || user?.email || "User";
+  const userInitials = displayName
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const displayRole = (user?.role || "USER").replaceAll("_", " ");
+  const isAdmin = user?.role === "ADMIN";
+  const isSupportEngineer = user?.role === "SUPPORT_ENGINEER";
+  const canUpdateStatus = isAdmin || isSupportEngineer;
+
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -130,6 +148,11 @@ function App() {
   const [priorityFilter, setPriorityFilter] = useState("All");
   const [formData, setFormData] = useState(emptyForm);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const profileMenuRef = useRef(null);
+  const notificationsRef = useRef(null);
+  const sidebarProfileRef = useRef(null);
   const [updatingTicketId, setUpdatingTicketId] = useState(null);
   const [deletingTicketId, setDeletingTicketId] = useState(null);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
@@ -139,6 +162,11 @@ function App() {
   const [activities, setActivities] = useState([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
   const [activitiesError, setActivitiesError] = useState("");
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notificationError, setNotificationError] = useState("");
+  const [markingAllRead, setMarkingAllRead] = useState(false);
 
   async function loadTickets() {
     try {
@@ -149,6 +177,18 @@ function App() {
       const result = unwrapResponse(response);
 
       setTickets(Array.isArray(result) ? result : []);
+      console.log(
+  "SLA diagnostic:",
+  (Array.isArray(result) ? result : []).slice(0, 5).map((ticket) => ({
+    id: ticket.id,
+    priority: ticket.priority,
+    createdAt: ticket.createdAt,
+    slaResponseDueAt: ticket.slaResponseDueAt,
+    slaResolutionDueAt: ticket.slaResolutionDueAt,
+    slaStatus: ticket.slaStatus,
+  }))
+);
+console.log("COMPLETE FIRST TICKET:", result?.[0]);
     } catch (err) {
       setError(
         err.response?.data?.message ||
@@ -159,8 +199,100 @@ function App() {
     }
   }
 
+  async function loadNotifications() {
+    try {
+      setNotificationLoading(true);
+      setNotificationError("");
+
+      const response = await getNotifications();
+
+      setNotifications(
+        Array.isArray(response?.data) ? response.data : []
+      );
+      setUnreadNotificationCount(Number(response?.unreadCount) || 0);
+    } catch (err) {
+      setNotificationError(
+        err.response?.data?.message || "Unable to load notifications."
+      );
+    } finally {
+      setNotificationLoading(false);
+    }
+  }
+
+  async function handleNotificationClick(notification) {
+    try {
+      if (Number(notification.isRead) === 0) {
+        await markNotificationRead(notification.id);
+
+        setNotifications((previous) =>
+          previous.map((item) =>
+            item.id === notification.id ? { ...item, isRead: 1 } : item
+          )
+        );
+        setUnreadNotificationCount((previous) => Math.max(0, previous - 1));
+      }
+
+      setNotificationsOpen(false);
+      openTicket(notification.ticketId);
+    } catch (err) {
+      setNotificationError(
+        err.response?.data?.message || "Unable to update this notification."
+      );
+    }
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    if (unreadNotificationCount === 0 || markingAllRead) return;
+
+    try {
+      setMarkingAllRead(true);
+      setNotificationError("");
+
+      await markAllNotificationsRead();
+
+      setNotifications((previous) =>
+        previous.map((item) => ({ ...item, isRead: 1 }))
+      );
+      setUnreadNotificationCount(0);
+    } catch (err) {
+      setNotificationError(
+        err.response?.data?.message || "Unable to mark notifications as read."
+      );
+    } finally {
+      setMarkingAllRead(false);
+    }
+  }
+
   useEffect(() => {
     loadTickets();
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+
+    const notificationInterval = setInterval(() => {
+      loadNotifications();
+    }, 30000);
+
+    return () => clearInterval(notificationInterval);
+  }, []);
+
+  useEffect(() => {
+    function handleOutsideClick(event) {
+      const clickedTopbarProfile = profileMenuRef.current?.contains(event.target);
+      const clickedSidebarProfile = sidebarProfileRef.current?.contains(event.target);
+      if (!clickedTopbarProfile && !clickedSidebarProfile) setProfileMenuOpen(false);
+      if (notificationsRef.current && !notificationsRef.current.contains(event.target)) setNotificationsOpen(false);
+    }
+    function handleEscape(event) {
+      if (event.key === "Escape") { setProfileMenuOpen(false); setNotificationsOpen(false); }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
 
   async function loadTicketActivities(ticketId) {
@@ -196,17 +328,42 @@ function App() {
   }, [activePage, selectedTicketId]);
 
   const stats = useMemo(() => {
-    const total = tickets.length;
-    const open = tickets.filter((ticket) => ticket.status === "Open").length;
-    const progress = tickets.filter(
-      (ticket) => ticket.status === "In Progress"
-    ).length;
-    const resolved = tickets.filter(
-      (ticket) => ticket.status === "Resolved"
-    ).length;
+  const total = tickets.length;
 
-    return { total, open, progress, resolved };
-  }, [tickets]);
+  const open = tickets.filter(
+    (ticket) => ticket.status === "Open"
+  ).length;
+
+  const progress = tickets.filter(
+    (ticket) => ticket.status === "In Progress"
+  ).length;
+
+  const resolved = tickets.filter(
+    (ticket) => ticket.status === "Resolved"
+  ).length;
+
+  const breached = tickets.filter(
+    (ticket) => ticket.slaStatus?.overall === "BREACHED"
+  ).length;
+
+  const atRisk = tickets.filter(
+    (ticket) => ticket.slaStatus?.overall === "AT_RISK"
+  ).length;
+
+  const onTrack = tickets.filter(
+    (ticket) => ticket.slaStatus?.overall === "ON_TRACK"
+  ).length;
+
+  return {
+    total,
+    open,
+    progress,
+    resolved,
+    breached,
+    atRisk,
+    onTrack,
+  };
+}, [tickets]);
 
   const priorityData = useMemo(
     () =>
@@ -280,7 +437,6 @@ function App() {
 
       const response = await createTicket({
         title: formData.title.trim(),
-        employee: formData.employee.trim(),
         department: formData.department,
         priority: formData.priority,
         description: formData.description.trim(),
@@ -294,6 +450,7 @@ function App() {
         await loadTickets();
       }
 
+      await loadNotifications();
       setFormData(emptyForm);
       setActivePage("Tickets");
       setSuccess("Your support ticket has been created successfully.");
@@ -306,41 +463,45 @@ function App() {
     }
   }
 
-  async function handleStatusChange(ticketId, newStatus) {
+  async function handleTicketFieldChange(ticketId, field, value) {
+    const fieldLabel = field === "status" ? "status" : "priority";
+
     try {
       setUpdatingTicketId(ticketId);
       setError("");
       setSuccess("");
 
-      const response = await updateTicket(ticketId, {
-        status: newStatus,
-      });
-
+      const response = await updateTicket(ticketId, { [field]: value });
       const updatedTicket = unwrapResponse(response);
 
       setTickets((previous) =>
         previous.map((ticket) =>
-          ticket.id === ticketId
-            ? {
-                ...ticket,
-                ...(updatedTicket || {}),
-                status: newStatus,
-              }
+          String(ticket.id) === String(ticketId)
+            ? { ...ticket, ...(updatedTicket || {}), [field]: value }
             : ticket
         )
       );
 
-      setSuccess(`Ticket #${ticketId} status updated.`);
+      await loadNotifications();
+      setSuccess(`Ticket #${ticketId} ${fieldLabel} updated.`);
       if (String(selectedTicketId) === String(ticketId)) {
         await loadTicketActivities(ticketId);
       }
     } catch (err) {
       setError(
-        err.response?.data?.message || "Unable to update ticket status."
+        err.response?.data?.message || `Unable to update ticket ${fieldLabel}.`
       );
     } finally {
       setUpdatingTicketId(null);
     }
+  }
+
+  async function handleStatusChange(ticketId, newStatus) {
+    return handleTicketFieldChange(ticketId, "status", newStatus);
+  }
+
+  async function handlePriorityChange(ticketId, newPriority) {
+    return handleTicketFieldChange(ticketId, "priority", newPriority);
   }
 
   async function handleDeleteTicket(ticketId) {
@@ -410,6 +571,7 @@ function App() {
         )
       );
 
+      await loadNotifications();
       setSuccess(`Ticket #${assignmentTicket.id} assigned to ${assignmentEmail.trim()}.`);
       if (String(selectedTicketId) === String(assignmentTicket.id)) {
         await loadTicketActivities(assignmentTicket.id);
@@ -427,7 +589,7 @@ function App() {
     activePage === "Create Ticket"
       ? "Create ticket"
       : activePage === "Tickets"
-        ? "All tickets"
+        ? isAdmin ? "All tickets" : isSupportEngineer ? "Assigned tickets" : "My tickets"
         : activePage === "Ticket Details"
           ? "Ticket details"
           : "Dashboard";
@@ -476,7 +638,7 @@ function App() {
             onClick={() => navigate("Tickets")}
           >
             <Ticket size={19} />
-            <span>All tickets</span>
+            <span>{isAdmin ? "All tickets" : isSupportEngineer ? "Assigned tickets" : "My tickets"}</span>
             <span className="nav-count">{tickets.length}</span>
           </button>
 
@@ -488,23 +650,6 @@ function App() {
           >
             <Plus size={19} />
             <span>Create ticket</span>
-          </button>
-        </nav>
-
-        <div className="workspace-label tools-label">MANAGEMENT</div>
-
-        <nav className="sidebar-nav">
-          <button className="nav-link" onClick={() => navigate("Tickets")}>
-            <Users size={19} />
-            <span>Employees</span>
-          </button>
-          <button className="nav-link" onClick={() => navigate("Tickets")}>
-            <ShieldCheck size={19} />
-            <span>Service operations</span>
-          </button>
-          <button className="nav-link" onClick={() => navigate("Dashboard")}>
-            <Activity size={19} />
-            <span>Activity overview</span>
           </button>
         </nav>
 
@@ -520,19 +665,35 @@ function App() {
             </button>
           </div>
 
-          <div className="profile">
-            <div className="profile-avatar">AD</div>
-            <div className="profile-info">
-              <strong>Admin User</strong>
-              <span>IT Administrator</span>
+          <div className="sidebar-profile-wrap" ref={sidebarProfileRef}>
+            <div className="profile">
+              <div className="profile-avatar">{userInitials}</div>
+              <div className="profile-info">
+                <strong>{displayName}</strong>
+                <span>{displayRole}</span>
+              </div>
+              <button
+                className="profile-menu"
+                aria-label="Open account menu"
+                title="Account options"
+                aria-expanded={profileMenuOpen}
+                onClick={() => { setProfileMenuOpen((open) => !open); setNotificationsOpen(false); }}
+              >
+                <ChevronDown className={profileMenuOpen ? "sidebar-chevron-open" : ""} size={17} />
+              </button>
             </div>
-            <button
-              className="profile-menu"
-              aria-label="Profile options"
-              title="Profile options"
-            >
-              <LogOut size={17} />
-            </button>
+            {profileMenuOpen && (
+              <section className="sidebar-account-popover" role="menu" aria-label="Account menu">
+                <div className="sidebar-account-heading">
+                  <strong>{displayName}</strong>
+                  <span>{user?.email || ""}</span>
+                </div>
+                <div className="sidebar-account-role"><ShieldCheck size={14} /> {displayRole} <i>Active</i></div>
+                <button className="sidebar-account-logout" role="menuitem" onClick={() => { setProfileMenuOpen(false); logout(); }}>
+                  <LogOut size={15} /> Sign out
+                </button>
+              </section>
+            )}
           </div>
         </div>
       </aside>
@@ -558,16 +719,114 @@ function App() {
               <span className="status-dot" />
               System operational
             </div>
-            <button className="icon-button" aria-label="Notifications">
-              <Bell size={19} />
-              <span className="notification-dot" />
-            </button>
-            <div className="topbar-avatar">AD</div>
-            <div className="topbar-user">
-              <strong>Admin User</strong>
-              <span>Administrator</span>
+            <div className="topbar-popover-anchor" ref={notificationsRef}>
+              <button
+                type="button"
+                className={`icon-button notification-trigger ${unreadNotificationCount > 0 ? "has-notifications" : ""}`}
+                aria-label={`Notifications, ${unreadNotificationCount} unread`}
+                aria-expanded={notificationsOpen}
+                onClick={() => {
+                  setNotificationsOpen((open) => !open);
+                  setProfileMenuOpen(false);
+                  if (!notificationsOpen) loadNotifications();
+                }}
+              >
+                <Bell size={19} />
+                {unreadNotificationCount > 0 && (
+                  <span className="notification-count">
+                    {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
+                  </span>
+                )}
+              </button>
+
+              {notificationsOpen && (
+                <section
+                  className="topbar-popover notification-popover"
+                  role="dialog"
+                  aria-label="Notifications"
+                >
+                  <div className="popover-heading">
+                    <strong>Notifications</strong>
+                    <span>{unreadNotificationCount} unread</span>
+                  </div>
+
+                  {unreadNotificationCount > 0 && (
+                    <div className="notification-actions">
+                      <button
+                        type="button"
+                        className="notification-mark-all"
+                        onClick={handleMarkAllNotificationsRead}
+                        disabled={markingAllRead}
+                      >
+                        {markingAllRead ? "Marking..." : "Mark all as read"}
+                      </button>
+                    </div>
+                  )}
+
+                  {notificationError && (
+                    <div className="notification-error" role="alert">
+                      {notificationError}
+                    </div>
+                  )}
+
+                  {notificationLoading ? (
+                    <div className="notification-loading">
+                      <span className="notification-spinner" />
+                      Loading notifications...
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div className="notification-empty">
+                      <span className="notification-empty-icon">
+                        <Bell size={19} />
+                      </span>
+                      <strong>No notifications yet</strong>
+                      <p>Updates about tickets you can access will appear here.</p>
+                    </div>
+                  ) : (
+                    <div className="notification-list">
+                      {notifications.map((notification) => {
+                        const isUnread = Number(notification.isRead) === 0;
+
+                        return (
+                          <button
+                            type="button"
+                            className={`notification-item ${isUnread ? "notification-item-unread" : ""}`}
+                            key={notification.id}
+                            onClick={() => handleNotificationClick(notification)}
+                          >
+                            <span className="notification-item-icon">
+                              <Ticket size={16} />
+                            </span>
+                            <span className="notification-item-copy">
+                              <strong>{notification.title || "Ticket update"}</strong>
+                              <span>{notification.message || `Update for ticket #${notification.ticketId}`}</span>
+                              <small>{formatDateTime(notification.createdAt)}</small>
+                            </span>
+                            {isUnread && (
+                              <span className="notification-unread-dot" aria-label="Unread" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
-            <ChevronDown className="topbar-chevron" size={16} />
+            <div className="topbar-popover-anchor" ref={profileMenuRef}>
+              <button className="topbar-account-button" aria-label="Open account menu" aria-expanded={profileMenuOpen} onClick={() => { setProfileMenuOpen((open) => !open); setNotificationsOpen(false); }}>
+                <span className="topbar-avatar">{userInitials}</span>
+                <span className="topbar-user"><strong>{displayName}</strong><span>{displayRole}</span></span>
+                <ChevronDown className={`topbar-chevron ${profileMenuOpen ? "chevron-open" : ""}`} size={16} />
+              </button>
+              {profileMenuOpen && (
+                <section className="topbar-popover account-popover" role="menu" aria-label="Account menu">
+                  <div className="account-popover-user"><span className="topbar-avatar">{userInitials}</span><span><strong>{displayName}</strong><small>{user?.email || ""}</small></span></div>
+                  <div className="account-role-line"><ShieldCheck size={15} /><span>{displayRole}</span><i>Active session</i></div>
+                  <button className="account-logout" role="menuitem" onClick={() => { setProfileMenuOpen(false); logout(); }}><LogOut size={16} /> Sign out</button>
+                </section>
+              )}
+            </div>
           </div>
         </header>
 
@@ -598,6 +857,7 @@ function App() {
           {activePage === "Dashboard" && (
             <DashboardPage
               stats={stats}
+              userName={displayName}
               tickets={tickets}
               priorityData={priorityData}
               loading={loading}
@@ -605,6 +865,8 @@ function App() {
               onViewAll={() => navigate("Tickets")}
               onViewTicket={openTicket}
               onRefresh={loadTickets}
+              role={user?.role}
+              onFilterStatus={(status) => { setStatusFilter(status); setPriorityFilter("All"); setSearch(""); navigate("Tickets"); }}
             />
           )}
 
@@ -622,11 +884,15 @@ function App() {
               onRefresh={loadTickets}
               onCreate={() => navigate("Create Ticket")}
               onStatusChange={handleStatusChange}
+              onPriorityChange={handlePriorityChange}
               onDelete={handleDeleteTicket}
               onViewTicket={openTicket}
               onAssign={openAssignment}
               updatingTicketId={updatingTicketId}
               deletingTicketId={deletingTicketId}
+              canUpdateStatus={canUpdateStatus}
+              isAdmin={isAdmin}
+              role={user?.role}
             />
           )}
 
@@ -637,6 +903,7 @@ function App() {
               )}
               onBack={() => navigate("Tickets")}
               onStatusChange={handleStatusChange}
+              onPriorityChange={handlePriorityChange}
               onDelete={handleDeleteTicket}
               onAssign={openAssignment}
               updatingTicketId={updatingTicketId}
@@ -645,6 +912,8 @@ function App() {
               activitiesLoading={activitiesLoading}
               activitiesError={activitiesError}
               onRefreshActivities={() => loadTicketActivities(selectedTicketId)}
+              canUpdateStatus={canUpdateStatus}
+              isAdmin={isAdmin}
             />
           )}
 
@@ -655,6 +924,7 @@ function App() {
               onSubmit={handleCreateTicket}
               onCancel={() => navigate("Dashboard")}
               submitting={submitting}
+              requesterName={displayName}
             />
           )}
 
@@ -704,7 +974,7 @@ function App() {
                   style={{ width: "100%", padding: "11px 12px", border: "1px solid #cbd5e1", borderRadius: 8, outlineColor: "#4169e1" }}
                 />
                 <p style={{ margin: "8px 0 20px", fontSize: 12, color: "#64748b" }}>
-                  This currently records the email as an identifier; it does not verify an engineer account.
+                  Only an active account with the SUPPORT_ENGINEER role can be assigned.
                 </p>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
                   <button type="button" className="button-secondary" onClick={closeAssignment} disabled={assigning}>Cancel</button>
@@ -728,6 +998,7 @@ function App() {
 
 function DashboardPage({
   stats,
+  userName,
   tickets,
   priorityData,
   loading,
@@ -735,7 +1006,11 @@ function DashboardPage({
   onViewAll,
   onRefresh,
   onViewTicket,
+  role,
+  onFilterStatus,
 }) {
+  const isEmployee = role === "EMPLOYEE";
+  const isSupportEngineer = role === "SUPPORT_ENGINEER";
   const recentTickets = [...tickets]
     .sort((a, b) => Number(b.id) - Number(a.id))
     .slice(0, 5);
@@ -744,11 +1019,14 @@ function DashboardPage({
     <>
       <section className="welcome-banner">
         <div className="welcome-content">
-          <div className="eyebrow">IT OPERATIONS OVERVIEW</div>
-          <h2>Good day, Admin.</h2>
+          <div className="eyebrow">{isEmployee ? "MY IT SUPPORT" : isSupportEngineer ? "SUPPORT WORKSPACE" : "IT OPERATIONS OVERVIEW"}</div>
+          <h2>Good day, {userName.split(" ")[0]}.</h2>
           <p>
-            Monitor your support requests, track progress, and keep your
-            workplace running smoothly.
+            {isEmployee
+              ? "Create support requests and track the progress of your own IT issues."
+              : isSupportEngineer
+                ? "Review your assigned support requests and keep issues moving toward resolution."
+                : "Monitor support requests, manage workloads, and keep your organization running smoothly."}
           </p>
           <button className="button-primary welcome-button" onClick={onCreate}>
             <Plus size={17} /> Create new ticket
@@ -782,35 +1060,36 @@ function DashboardPage({
       </div>
 
       <section className="stats-grid">
-        <StatCard
-          label="Total tickets"
-          value={stats.total}
-          icon={<ClipboardList size={21} />}
-          tone="blue"
-          note="All requests"
-        />
-        <StatCard
-          label="Open tickets"
-          value={stats.open}
-          icon={<AlertCircle size={21} />}
-          tone="orange"
-          note="Awaiting action"
-        />
-        <StatCard
-          label="In progress"
-          value={stats.progress}
-          icon={<Clock3 size={21} />}
-          tone="purple"
-          note="Being worked on"
-        />
-        <StatCard
-          label="Resolved"
-          value={stats.resolved}
-          icon={<CheckCircle2 size={21} />}
-          tone="green"
-          note="Completed requests"
-        />
+        <StatCard label="Total tickets" value={stats.total} icon={<ClipboardList size={21} />} tone="blue" note="All requests" onClick={() => onFilterStatus("All")} />
+        <StatCard label="Open tickets" value={stats.open} icon={<AlertCircle size={21} />} tone="orange" note="Awaiting action" onClick={() => onFilterStatus("Open")} />
+        <StatCard label="In progress" value={stats.progress} icon={<Clock3 size={21} />} tone="purple" note="Being worked on" onClick={() => onFilterStatus("In Progress")} />
+        <StatCard label="Resolved" value={stats.resolved} icon={<CheckCircle2 size={21} />} tone="green" note="Completed requests" onClick={() => onFilterStatus("Resolved")} />
       </section>
+      <section className="stats-grid sla-stats-grid">
+  <StatCard
+    label="SLA breached"
+    value={stats.breached}
+    icon={<AlertCircle size={21} />}
+    tone="orange"
+    note="Requires immediate attention"
+  />
+
+  <StatCard
+    label="SLA at risk"
+    value={stats.atRisk}
+    icon={<Clock3 size={21} />}
+    tone="purple"
+    note="Approaching deadline"
+  />
+
+  <StatCard
+    label="SLA on track"
+    value={stats.onTrack}
+    icon={<CheckCircle2 size={21} />}
+    tone="green"
+    note="Within SLA targets"
+  />
+</section>
 
       <section className="dashboard-grid">
         <div className="panel chart-panel">
@@ -952,8 +1231,8 @@ function DashboardPage({
       <section className="panel recent-panel">
         <div className="panel-heading recent-heading">
           <div>
-            <h3>Recent support tickets</h3>
-            <p>Latest requests submitted to your IT service desk.</p>
+            <h3>{isEmployee ? "My recent tickets" : isSupportEngineer ? "My assigned tickets" : "Recent support tickets"}</h3>
+            <p>{isEmployee ? "Your latest support requests." : isSupportEngineer ? "The latest tickets assigned to you." : "Latest requests submitted to your IT service desk."}</p>
           </div>
           <button className="text-button" onClick={onViewAll}>
             View all tickets <ArrowUpRight size={16} />
@@ -971,9 +1250,9 @@ function DashboardPage({
   );
 }
 
-function StatCard({ label, value, icon, tone, note }) {
+function StatCard({ label, value, icon, tone, note, onClick }) {
   return (
-    <article className="stat-card">
+    <button type="button" className="stat-card stat-card-button" onClick={onClick} aria-label={`View ${label.toLowerCase()}`}>
       <div className={`stat-icon ${tone}`}>{icon}</div>
       <div className="stat-card-content">
         <span className="stat-label">{label}</span>
@@ -983,7 +1262,7 @@ function StatCard({ label, value, icon, tone, note }) {
       <div className="stat-trend">
         <ArrowDownRight size={15} />
       </div>
-    </article>
+    </button>
   );
 }
 
@@ -1000,18 +1279,25 @@ function TicketsPage({
   onRefresh,
   onCreate,
   onStatusChange,
+  onPriorityChange,
   onDelete,
   onViewTicket,
   onAssign,
   updatingTicketId,
   deletingTicketId,
+  canUpdateStatus,
+  isAdmin,
+  role,
 }) {
+  const heading = role === "EMPLOYEE" ? "My support tickets" : role === "SUPPORT_ENGINEER" ? "Assigned support tickets" : "All support tickets";
+  const description = role === "EMPLOYEE" ? "View and track the progress of your own support requests." : role === "SUPPORT_ENGINEER" ? "Review and update the support tickets assigned to you." : "Search, filter, assign, and manage employee support requests.";
+
   return (
     <section className="panel tickets-page-panel">
       <div className="panel-heading tickets-page-heading">
         <div>
-          <h3>All support tickets</h3>
-          <p>Search, filter, and manage employee support requests.</p>
+          <h3>{heading}</h3>
+          <p>{description}</p>
         </div>
         <button className="button-primary" onClick={onCreate}>
           <Plus size={17} /> New ticket
@@ -1077,11 +1363,14 @@ function TicketsPage({
         tickets={tickets}
         loading={loading}
         onStatusChange={onStatusChange}
+        onPriorityChange={onPriorityChange}
         onDelete={onDelete}
         onViewTicket={onViewTicket}
-        onAssign={onAssign}
+        onAssign={isAdmin ? onAssign : undefined}
         updatingTicketId={updatingTicketId}
         deletingTicketId={deletingTicketId}
+        showAdminActions={isAdmin}
+        canUpdateStatus={canUpdateStatus}
       />
 
       <div className="table-bottom">
@@ -1100,11 +1389,14 @@ function TicketTable({
   loading,
   compact = false,
   onStatusChange,
+  onPriorityChange,
   onDelete,
   onViewTicket,
   onAssign,
   updatingTicketId,
   deletingTicketId,
+  showAdminActions = false,
+  canUpdateStatus = false,
 }) {
   if (loading) {
     return <div className="table-message">Loading support tickets...</div>;
@@ -1134,7 +1426,7 @@ function TicketTable({
             <th>Status</th>
             <th>Assigned engineer</th>
             <th>Date created</th>
-            {!compact && <th>Actions</th>}
+            {!compact && showAdminActions && <th>Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -1165,15 +1457,27 @@ function TicketTable({
                 </div>
               </td>
               <td>
-                <span
-                  className={`priority-badge ${(ticket.priority || "Medium").toLowerCase()}`}
-                >
-                  <span />
-                  {ticket.priority || "Medium"}
-                </span>
+                {canUpdateStatus && onPriorityChange ? (
+                  <select
+                    className={`status-select priority-edit-select ${(ticket.priority || "Medium").toLowerCase()}`}
+                    value={ticket.priority || "Medium"}
+                    disabled={updatingTicketId === ticket.id}
+                    onChange={(event) => onPriorityChange(ticket.id, event.target.value)}
+                    aria-label={`Change priority for ticket ${ticket.id}`}
+                  >
+                    {priorityOptions.map((priority) => (
+                      <option key={priority} value={priority}>{priority}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className={`priority-badge ${(ticket.priority || "Medium").toLowerCase()}`}>
+                    <span />
+                    {ticket.priority || "Medium"}
+                  </span>
+                )}
               </td>
               <td>
-                {onStatusChange ? (
+                {canUpdateStatus && onStatusChange ? (
                   <select
                     className={`status-select ${(ticket.status || "Open")
                       .toLowerCase()
@@ -1204,7 +1508,7 @@ function TicketTable({
                 )}
               </td>
               <td className="date-cell">{formatDate(getTicketDate(ticket))}</td>
-              {!compact && (
+              {!compact && showAdminActions && (
                 <td>
                   <button
                     type="button"
@@ -1237,6 +1541,7 @@ function TicketDetailsPage({
   ticket,
   onBack,
   onStatusChange,
+  onPriorityChange,
   onDelete,
   onAssign,
   updatingTicketId,
@@ -1245,7 +1550,19 @@ function TicketDetailsPage({
   activitiesLoading,
   activitiesError,
   onRefreshActivities,
+  canUpdateStatus = false,
+  isAdmin = false,
 }) {
+  const [showAllActivities, setShowAllActivities] = useState(false);
+
+  useEffect(() => {
+    setShowAllActivities(false);
+  }, [ticket?.id]);
+
+  const visibleActivities = showAllActivities
+    ? activities
+    : activities.slice(0, 2);
+
   if (!ticket) {
     return (
       <section className="panel ticket-details-panel ticket-not-found">
@@ -1348,7 +1665,7 @@ function TicketDetailsPage({
               </div>
             ) : (
               <div className="activity-history-list">
-                {activities.map((activity, index) => (
+                {visibleActivities.map((activity, index) => (
                   <article className="activity-history-item" key={activity.activityId || `${activity.action}-${index}`}>
                     <div className="activity-history-rail">
                       <span className="activity-history-dot">
@@ -1362,7 +1679,7 @@ function TicketDetailsPage({
                           <Clock3 size={15} />
                         )}
                       </span>
-                      {index !== activities.length - 1 && <span className="activity-history-line" />}
+                      {index !== visibleActivities.length - 1 && <span className="activity-history-line" />}
                     </div>
                     <div className="activity-history-content">
                       <div className="activity-history-heading">
@@ -1393,6 +1710,23 @@ function TicketDetailsPage({
                 ))}
               </div>
             )}
+
+            {!activitiesLoading && !activitiesError && activities.length > 2 && (
+              <div className="activity-show-more-wrapper">
+                <button
+                  type="button"
+                  className="activity-show-more-button"
+                  onClick={() => setShowAllActivities((previous) => !previous)}
+                  aria-expanded={showAllActivities}
+                >
+                  {showAllActivities ? "Show less" : `Show all ${activities.length} events`}
+                  <ChevronDown
+                    size={16}
+                    className={showAllActivities ? "activity-chevron-open" : ""}
+                  />
+                </button>
+              </div>
+            )}
           </section>
         </div>
 
@@ -1400,25 +1734,43 @@ function TicketDetailsPage({
           <section className="panel details-side-card">
             <div className="details-section-heading compact-heading">
               <div className="details-section-icon control-icon"><ShieldCheck size={18} /></div>
-              <div><h3>Ticket controls</h3><p>Manage request status</p></div>
+              <div><h3>Ticket controls</h3><p>Update request status and priority</p></div>
             </div>
             <div className="control-field">
-              <label htmlFor="ticket-detail-status">Current status</label>
-              <select
-                id="ticket-detail-status"
-                className={`status-select ${(status).toLowerCase().replace(" ", "-")}`}
-                value={status}
-                disabled={updatingTicketId === ticket.id}
-                onChange={(event) => onStatusChange(ticket.id, event.target.value)}
-              >
-                {statusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-              {updatingTicketId === ticket.id && <span className="control-hint">Saving status...</span>}
+              <label>Current status</label>
+              {canUpdateStatus ? (
+                <>
+                  <select
+                    id="ticket-detail-status"
+                    className={`status-select ${(status).toLowerCase().replace(" ", "-")}`}
+                    value={status}
+                    disabled={updatingTicketId === ticket.id}
+                    onChange={(event) => onStatusChange(ticket.id, event.target.value)}
+                  >
+                    {statusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                  {updatingTicketId === ticket.id && <span className="control-hint">Saving status...</span>}
+                </>
+              ) : (
+                <StatusBadge status={status} />
+              )}
             </div>
             <div className="side-card-divider" />
             <div className="control-field">
-              <label>Priority level</label>
-              <span className={`priority-badge ${priority.toLowerCase()}`}><span />{priority}</span>
+              <label htmlFor="ticket-detail-priority">Priority level</label>
+              {canUpdateStatus ? (
+                <select
+                  id="ticket-detail-priority"
+                  className={`status-select priority-edit-select ${priority.toLowerCase()}`}
+                  value={priority}
+                  disabled={updatingTicketId === ticket.id}
+                  onChange={(event) => onPriorityChange(ticket.id, event.target.value)}
+                >
+                  {priorityOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              ) : (
+                <span className={`priority-badge ${priority.toLowerCase()}`}><span />{priority}</span>
+              )}
             </div>
             <div className="side-card-divider" />
             <div className="control-field">
@@ -1426,22 +1778,28 @@ function TicketDetailsPage({
               <strong style={{ display: "block", margin: "6px 0 10px", fontSize: 13, overflowWrap: "anywhere" }}>
                 {ticket.assignedTo || "Not assigned"}
               </strong>
-              <button type="button" className="button-secondary" onClick={() => onAssign?.(ticket)}>
-                {ticket.assignedTo ? "Reassign engineer" : "Assign engineer"}
-              </button>
+              {isAdmin && (
+                <button type="button" className="button-secondary" onClick={() => onAssign?.(ticket)}>
+                  {ticket.assignedTo ? "Reassign engineer" : "Assign engineer"}
+                </button>
+              )}
               {ticket.assignedAt && (
                 <span className="control-hint">Assigned {new Date(ticket.assignedAt).toLocaleString("en-IN")}</span>
               )}
             </div>
-            <div className="side-card-divider" />
-            <button
-              className="delete-detail-button"
-              onClick={() => onDelete(ticket.id)}
-              disabled={deletingTicketId === ticket.id}
-            >
-              <Trash2 size={16} />
-              {deletingTicketId === ticket.id ? "Deleting..." : "Delete ticket"}
-            </button>
+            {isAdmin && (
+              <>
+                <div className="side-card-divider" />
+                <button
+                  className="delete-detail-button"
+                  onClick={() => onDelete(ticket.id)}
+                  disabled={deletingTicketId === ticket.id}
+                >
+                  <Trash2 size={16} />
+                  {deletingTicketId === ticket.id ? "Deleting..." : "Delete ticket"}
+                </button>
+              </>
+            )}
           </section>
 
           <section className="panel details-side-card requester-card">
@@ -1483,6 +1841,7 @@ function CreateTicketPage({
   onSubmit,
   onCancel,
   submitting,
+  requesterName,
 }) {
   return (
     <section className="create-layout">
@@ -1524,16 +1883,9 @@ function CreateTicketPage({
           </div>
 
           <div className="form-field">
-            <label htmlFor="employee">Employee name <span>*</span></label>
-            <input
-              id="employee"
-              name="employee"
-              value={formData.employee}
-              onChange={onChange}
-              placeholder="Enter employee name"
-              maxLength={80}
-              required
-            />
+            <label>Requested by</label>
+            <div className="requester-auto-value" style={{ padding: "11px 12px", border: "1px solid #e2e8f0", borderRadius: 9, background: "#f8fafc", color: "#334155", minHeight: 44 }}>{requesterName}</div>
+            <small>Automatically taken from your signed-in account.</small>
           </div>
 
           <div className="form-field">

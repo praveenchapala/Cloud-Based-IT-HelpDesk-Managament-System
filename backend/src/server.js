@@ -1,4 +1,4 @@
-
+import { pathToFileURL } from "node:url";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -29,8 +29,215 @@ app.use(
 
 app.use(express.json());
 
-const validPriorities = ["Low", "Medium", "High"];
+const validPriorities = ["Low", "Medium", "High", "Critical"];
 const validStatuses = ["Open", "In Progress", "Resolved"];
+
+const SLA_POLICIES = {
+  Critical: {
+    responseMinutes: 15,
+    resolutionMinutes: 240
+  },
+  High: {
+    responseMinutes: 60,
+    resolutionMinutes: 480
+  },
+  Medium: {
+    responseMinutes: 240,
+    resolutionMinutes: 1440
+  },
+  Low: {
+    responseMinutes: 480,
+    resolutionMinutes: 4320
+  }
+};
+
+const calculateSlaDeadlines = (priority, createdAt) => {
+  const policy = SLA_POLICIES[priority];
+
+  if (!policy) {
+    throw new Error("Invalid priority for SLA calculation");
+  }
+
+  const startTime = new Date(createdAt).getTime();
+
+  if (!Number.isFinite(startTime)) {
+    throw new Error("Invalid ticket creation timestamp");
+  }
+
+  return {
+    slaResponseDueAt: new Date(
+      startTime + policy.responseMinutes * 60 * 1000
+    ).toISOString(),
+
+    slaResolutionDueAt: new Date(
+      startTime + policy.resolutionMinutes * 60 * 1000
+    ).toISOString(),
+
+    slaPolicy: { ...policy }
+  };
+};
+
+
+// --------------------------------------------------
+// CALCULATE CURRENT SLA STATUS
+// --------------------------------------------------
+
+const getSlaStatus = (ticket, currentTime = Date.now()) => {
+  if (
+    !ticket.slaResponseDueAt ||
+    !ticket.slaResolutionDueAt ||
+    !ticket.slaPolicy
+  ) {
+    return {
+      overall: "NO_SLA",
+      response: "NO_SLA",
+      resolution: "NO_SLA"
+    };
+  }
+
+  const calculateStatus = (completedAt, deadline, allowedMinutes) => {
+    const deadlineTime = new Date(deadline).getTime();
+
+    if (!Number.isFinite(deadlineTime)) {
+      return "NO_SLA";
+    }
+
+    // An already completed action is evaluated against its deadline.
+    if (completedAt) {
+      const completedTime = new Date(completedAt).getTime();
+
+      if (!Number.isFinite(completedTime)) {
+        return "NO_SLA";
+      }
+
+      return completedTime <= deadlineTime ? "MET" : "BREACHED";
+    }
+
+    const remainingTime = deadlineTime - currentTime;
+
+    if (remainingTime < 0) {
+      return "BREACHED";
+    }
+
+    // Mark as at risk when 20% or less of the SLA duration remains.
+    const atRiskThreshold =
+      allowedMinutes * 60 * 1000 * 0.2;
+
+    if (remainingTime <= atRiskThreshold) {
+      return "AT_RISK";
+    }
+
+    return "ON_TRACK";
+  };
+
+  const responseStatus = calculateStatus(
+    ticket.firstResponseAt,
+    ticket.slaResponseDueAt,
+    ticket.slaPolicy.responseMinutes
+  );
+
+  // Use the first recorded resolution to preserve the original SLA outcome
+  // even if the ticket is subsequently reopened.
+  const resolutionHistory = Array.isArray(ticket.resolutionHistory)
+    ? ticket.resolutionHistory
+    : [];
+
+  const firstResolution = resolutionHistory.find(
+    entry => entry.resolvedAt
+  );
+
+  const resolutionCompletedAt =
+    firstResolution?.resolvedAt || ticket.resolvedAt || null;
+
+  const resolutionStatus = calculateStatus(
+    resolutionCompletedAt,
+    ticket.slaResolutionDueAt,
+    ticket.slaPolicy.resolutionMinutes
+  );
+
+  let overall = "ON_TRACK";
+
+  if (
+    responseStatus === "BREACHED" ||
+    resolutionStatus === "BREACHED"
+  ) {
+    overall = "BREACHED";
+  } else if (
+    responseStatus === "AT_RISK" ||
+    resolutionStatus === "AT_RISK"
+  ) {
+    overall = "AT_RISK";
+  } else if (
+    responseStatus === "NO_SLA" ||
+    resolutionStatus === "NO_SLA"
+  ) {
+    overall = "NO_SLA";
+  } else if (
+    responseStatus === "MET" &&
+    resolutionStatus === "MET"
+  ) {
+    overall = "MET";
+  }
+
+  return {
+    overall,
+    response: responseStatus,
+    resolution: resolutionStatus
+  };
+};
+
+// --------------------------------------------------
+// NORMALIZE SLA DATA FOR LEGACY TICKETS
+// --------------------------------------------------
+
+// Older tickets were created before SLA tracking was introduced. Those
+// records have a date field (YYYY-MM-DD), but may not have createdAt or
+// stored SLA deadlines. Use the beginning of that recorded date as the
+// best available timestamp; do not use the current time because that
+// would incorrectly reset the ticket's SLA clock.
+const getTicketWithSla = (ticket) => {
+  const legacyCreatedAt = ticket.createdAt ||
+    (typeof ticket.date === "string" && ticket.date.trim()
+      ? `${ticket.date.trim()}T00:00:00.000Z`
+      : null);
+
+  if (
+    ticket.slaResponseDueAt &&
+    ticket.slaResolutionDueAt &&
+    ticket.slaPolicy
+  ) {
+    return {
+      ...ticket,
+      slaStatus: getSlaStatus(ticket)
+    };
+  }
+
+  if (legacyCreatedAt && SLA_POLICIES[ticket.priority]) {
+    try {
+      const slaDeadlines = calculateSlaDeadlines(
+        ticket.priority,
+        legacyCreatedAt
+      );
+      const normalizedTicket = {
+        ...ticket,
+        createdAt: ticket.createdAt || legacyCreatedAt,
+        ...slaDeadlines
+      };
+
+      return {
+        ...normalizedTicket,
+        slaStatus: getSlaStatus(normalizedTicket)
+      };
+    } catch (error) {
+      console.error(`Could not calculate SLA for ticket ${ticket.id}:`, error);
+    }
+  }
+
+  return {
+    ...ticket,
+    slaStatus: getSlaStatus(ticket)
+  };
+};
 
 // --------------------------------------------------
 // ACTIVITY HISTORY HELPER
@@ -377,6 +584,40 @@ const denyTicketAccess = (res) => {
     success: false,
     message: "You do not have permission to access this ticket."
   });
+
+};
+
+
+// --------------------------------------------------
+// NOTIFICATION CREATION HELPERS
+// --------------------------------------------------
+
+const createNotification = ({ userId, ticketId, type, title, message }) => {
+  if (!userId || !ticketId) return;
+  try {
+    db.prepare(`
+      INSERT INTO notifications (id, user_id, ticket_id, type, title, message)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), userId, String(ticketId), type, title, message);
+  } catch (error) {
+    console.error("Notification creation failed:", error);
+  }
+};
+
+const notifyActiveStaff = ({ ticket, type, title, message }) => {
+  try {
+    const staff = db.prepare(`
+      SELECT id FROM users
+      WHERE is_active = 1
+        AND role IN ('ADMIN', 'SUPPORT_ENGINEER')
+        AND id != ?
+    `).all(ticket.createdByUserId || "");
+    for (const recipient of staff) {
+      createNotification({ userId: recipient.id, ticketId: ticket.id, type, title, message });
+    }
+  } catch (error) {
+    console.error("Staff notification lookup failed:", error);
+  }
 };
 
 // --------------------------------------------------
@@ -406,9 +647,9 @@ app.get("/api/tickets", authenticateToken, async (req, res, next) => {
     const allTickets = result.Items || [];
 
     // Filter tickets on the backend, not in React.
-    const tickets = allTickets.filter(ticket =>
-      canAccessTicket(req.user, ticket)
-    );
+    const tickets = allTickets
+      .filter(ticket => canAccessTicket(req.user, ticket))
+      .map(ticket => getTicketWithSla(ticket));
 
     res.status(200).json({
       success: true,
@@ -475,6 +716,163 @@ app.get(
 );
 
 // --------------------------------------------------
+// ADD A REPLY TO A TICKET
+// --------------------------------------------------
+
+app.post(
+  "/api/tickets/:id/replies",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const { message } = req.body ?? {};
+
+      if (!Number.isSafeInteger(ticketId) || ticketId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid ticket ID"
+        });
+      }
+
+      if (
+        typeof message !== "string" ||
+        !message.trim() ||
+        message.trim().length > 2000
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Reply must contain 1 to 2000 characters"
+        });
+      }
+
+      const result = await dynamoDB.send(
+        new GetCommand({
+          TableName: TABLE_NAME,
+          Key: { id: ticketId }
+        })
+      );
+
+      if (!result.Item) {
+        return res.status(404).json({
+          success: false,
+          message: "Ticket not found"
+        });
+      }
+
+      const currentTicket = result.Item;
+
+      if (!canAccessTicket(req.user, currentTicket)) {
+        return denyTicketAccess(res);
+      }
+
+      if (currentTicket.status === "Resolved") {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot reply to a resolved ticket"
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      const reply = {
+        replyId: randomUUID(),
+        message: message.trim(),
+        senderId: req.user.id,
+        senderName: req.user.name,
+        senderEmail: req.user.email,
+        senderRole: req.user.role,
+        createdAt: now
+      };
+
+      const replies = Array.isArray(currentTicket.replies)
+        ? [...currentTicket.replies]
+        : [];
+
+      replies.push(reply);
+
+      const activityHistory = Array.isArray(currentTicket.activityHistory)
+        ? [...currentTicket.activityHistory]
+        : [];
+
+      activityHistory.push(
+        createActivity({
+          action: "TICKET_REPLY_ADDED",
+          description: `Reply added by ${req.user.email}`,
+          newValue: {
+            replyId: reply.replyId
+          },
+          performedBy: req.user.email
+        })
+      );
+
+      const updatedTicket = {
+        ...currentTicket,
+        replies,
+        activityHistory
+      };
+
+      // Only the first staff reply counts as the first response.
+      const isStaffReply =
+        req.user.role === "ADMIN" ||
+        req.user.role === "SUPPORT_ENGINEER";
+
+      if (isStaffReply && !currentTicket.firstResponseAt) {
+        updatedTicket.firstResponseAt = now;
+        updatedTicket.firstResponseBy = req.user.email;
+      }
+
+      await dynamoDB.send(
+        new PutCommand({
+          TableName: TABLE_NAME,
+          Item: updatedTicket,
+          ConditionExpression: "attribute_exists(id)"
+        })
+      );
+
+      // Notify the other participant.
+      if (isStaffReply) {
+        if (currentTicket.createdByUserId !== req.user.id) {
+          createNotification({
+            userId: currentTicket.createdByUserId,
+            ticketId,
+            type: "TICKET_REPLY",
+            title: "New reply on your ticket",
+            message: `A support representative replied to ticket #${ticketId}.`
+          });
+        }
+      } else if (currentTicket.assignedTo) {
+        const assignedEngineer = db.prepare(`
+          SELECT id
+          FROM users
+          WHERE email = ?
+            AND role = 'SUPPORT_ENGINEER'
+            AND is_active = 1
+        `).get(currentTicket.assignedTo);
+
+        if (assignedEngineer) {
+          createNotification({
+            userId: assignedEngineer.id,
+            ticketId,
+            type: "TICKET_REPLY",
+            title: "New employee reply",
+            message: `The requester replied to ticket #${ticketId}.`
+          });
+        }
+      }
+
+      res.status(201).json({
+        success: true,
+        message: "Reply added successfully",
+        data: reply
+      });
+
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// --------------------------------------------------
 // GET TICKET BY ID
 // --------------------------------------------------
 
@@ -512,7 +910,7 @@ app.get(
 
       res.status(200).json({
         success: true,
-        data: result.Item
+        data: getTicketWithSla(result.Item)
       });
 
     } catch (error) {
@@ -570,7 +968,11 @@ app.post(
       }
 
       const ticketId = Date.now();
-
+      const createdAt = new Date().toISOString();
+      const slaDeadlines = calculateSlaDeadlines(
+        selectedPriority,
+        createdAt
+      );
       const creationActivity = createActivity({
         action: "TICKET_CREATED",
         description: "Ticket was created",
@@ -584,6 +986,8 @@ app.post(
 
       const newTicket = {
         id: ticketId,
+        createdAt,
+        ...slaDeadlines,
         title: title.trim(),
 
         // Identity is derived from the authenticated user.
@@ -613,10 +1017,20 @@ app.post(
         })
       );
 
+      notifyActiveStaff({
+        ticket: newTicket,
+        type: "TICKET_CREATED",
+        title: "New ticket created",
+        message: `${newTicket.employee} created ticket #${newTicket.id}: ${newTicket.title}`
+      });
+
       res.status(201).json({
         success: true,
         message: "Ticket created successfully",
-        data: newTicket
+        data: {
+          ...newTicket,
+          slaStatus: getSlaStatus(newTicket)
+        }
       });
 
     } catch (error) {
@@ -751,6 +1165,48 @@ app.put(
         ...normalizedUpdates
       };
 
+      // --------------------------------------------------
+      // UPDATE SLA WHEN TICKET PRIORITY CHANGES
+      // --------------------------------------------------
+
+      const priorityChanged =
+  normalizedUpdates.priority !== undefined &&
+  normalizedUpdates.priority !== currentTicket.priority;
+
+let slaChangeDetails = null;
+
+if (priorityChanged && currentTicket.createdAt) {
+  const recalculatedSla = calculateSlaDeadlines(
+    normalizedUpdates.priority,
+    currentTicket.createdAt
+  );
+
+  const oldResponseDeadline = currentTicket.slaResponseDueAt ?? null;
+  const oldResolutionDeadline = currentTicket.slaResolutionDueAt ?? null;
+
+  // Preserve the response deadline if a staff response already exists.
+  if (!currentTicket.firstResponseAt) {
+    updatedTicket.slaResponseDueAt =
+      recalculatedSla.slaResponseDueAt;
+  }
+
+  // Preserve the resolution deadline for already-resolved tickets.
+  if (currentTicket.status !== "Resolved") {
+    updatedTicket.slaResolutionDueAt =
+      recalculatedSla.slaResolutionDueAt;
+  }
+
+  updatedTicket.slaPolicy = recalculatedSla.slaPolicy;
+  updatedTicket.slaPolicyUpdatedAt = new Date().toISOString();
+
+  slaChangeDetails = {
+    oldResponseDeadline,
+    newResponseDeadline: updatedTicket.slaResponseDueAt ?? oldResponseDeadline,
+    oldResolutionDeadline,
+    newResolutionDeadline: updatedTicket.slaResolutionDueAt ?? oldResolutionDeadline
+  };
+}
+
       const activityHistory = Array.isArray(currentTicket.activityHistory)
         ? [...currentTicket.activityHistory]
         : [];
@@ -786,8 +1242,75 @@ app.put(
           })
         );
       }
+      if (slaChangeDetails) {
+  activityHistory.push(
+    createActivity({
+      action: "SLA_POLICY_UPDATED",
+      description: `SLA deadlines recalculated after priority changed to ${normalizedUpdates.priority}`,
+      oldValue: {
+        responseDueAt: slaChangeDetails.oldResponseDeadline,
+        resolutionDueAt: slaChangeDetails.oldResolutionDeadline
+      },
+      newValue: {
+        responseDueAt: slaChangeDetails.newResponseDeadline,
+        resolutionDueAt: slaChangeDetails.newResolutionDeadline,
+        policy: updatedTicket.slaPolicy
+      },
+      performedBy: req.user.email
+    })
+  );
+}
+// --------------------------------------------------
+// TRACK TICKET RESOLUTION AND REOPENING
+// --------------------------------------------------
 
-      updatedTicket.activityHistory = activityHistory;
+const statusChanged =
+  normalizedUpdates.status !== undefined &&
+  normalizedUpdates.status !== currentTicket.status;
+
+if (statusChanged) {
+  const now = new Date().toISOString();
+
+  const resolutionHistory = Array.isArray(currentTicket.resolutionHistory)
+    ? [...currentTicket.resolutionHistory]
+    : [];
+
+  // Ticket is being resolved.
+  if (normalizedUpdates.status === "Resolved") {
+    updatedTicket.resolvedAt = now;
+    updatedTicket.resolvedBy = req.user.email;
+
+    resolutionHistory.push({
+      resolvedAt: now,
+      resolvedBy: req.user.email,
+      reopenedAt: null,
+      reopenedBy: null
+    });
+  }
+
+  // Previously resolved ticket is being reopened.
+  if (
+    currentTicket.status === "Resolved" &&
+    normalizedUpdates.status !== "Resolved"
+  ) {
+    const lastResolution = resolutionHistory.length - 1;
+
+    if (lastResolution >= 0) {
+      resolutionHistory[lastResolution] = {
+        ...resolutionHistory[lastResolution],
+        reopenedAt: now,
+        reopenedBy: req.user.email
+      };
+    }
+
+    updatedTicket.resolvedAt = null;
+    updatedTicket.resolvedBy = null;
+  }
+
+  updatedTicket.resolutionHistory = resolutionHistory;
+}
+
+updatedTicket.activityHistory = activityHistory;
 
       await dynamoDB.send(
         new PutCommand({
@@ -796,6 +1319,25 @@ app.put(
           ConditionExpression: "attribute_exists(id)"
         })
       );
+
+      const requesterId = currentTicket.createdByUserId;
+      if (requesterId && requesterId !== req.user.id) {
+        if (normalizedUpdates.status !== undefined && normalizedUpdates.status !== currentTicket.status) {
+          createNotification({
+            userId: requesterId, ticketId,
+            type: normalizedUpdates.status === "Resolved" ? "TICKET_RESOLVED" : "STATUS_CHANGED",
+            title: normalizedUpdates.status === "Resolved" ? "Your ticket was resolved" : "Ticket status updated",
+            message: `Ticket #${ticketId} "${currentTicket.title}" status changed from ${currentTicket.status} to ${normalizedUpdates.status}.`
+          });
+        }
+        if (normalizedUpdates.priority !== undefined && normalizedUpdates.priority !== currentTicket.priority) {
+          createNotification({
+            userId: requesterId, ticketId, type: "PRIORITY_CHANGED",
+            title: "Ticket priority updated",
+            message: `Ticket #${ticketId} "${currentTicket.title}" priority changed from ${currentTicket.priority} to ${normalizedUpdates.priority}.`
+          });
+        }
+      }
 
       res.status(200).json({
         success: true,
@@ -909,6 +1451,15 @@ app.put(
         })
       );
 
+      if (String(currentTicket.assignedTo || "").toLowerCase() !== supportEngineer.email.toLowerCase()) {
+        createNotification({
+          userId: supportEngineer.id, ticketId,
+          type: isReassignment ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
+          title: isReassignment ? "Ticket reassigned to you" : "New ticket assigned to you",
+          message: `Ticket #${ticketId} "${currentTicket.title}" has been assigned to you.`
+        });
+      }
+
       res.status(200).json({
         success: true,
         message: isReassignment
@@ -975,6 +1526,99 @@ app.delete(
     }
   }
 );
+// --------------------------------------------------
+// NOTIFICATION APIs
+// --------------------------------------------------
+
+// GET USER NOTIFICATIONS
+app.get("/api/notifications", authenticateToken, (req, res, next) => {
+  try {
+    const notifications = db.prepare(`
+      SELECT
+        id,
+        ticket_id AS ticketId,
+        type,
+        title,
+        message,
+        is_read AS isRead,
+        created_at AS createdAt
+      FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all(req.user.id);
+
+    const unreadResult = db.prepare(`
+      SELECT COUNT(*) AS unreadCount
+      FROM notifications
+      WHERE user_id = ?
+        AND is_read = 0
+    `).get(req.user.id);
+
+    res.status(200).json({
+      success: true,
+      count: notifications.length,
+      unreadCount: unreadResult.unreadCount,
+      data: notifications
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// MARK ONE NOTIFICATION AS READ
+app.patch(
+  "/api/notifications/:id/read",
+  authenticateToken,
+  (req, res, next) => {
+    try {
+      const result = db.prepare(`
+        UPDATE notifications
+        SET is_read = 1
+        WHERE id = ?
+          AND user_id = ?
+      `).run(req.params.id, req.user.id);
+
+      if (result.changes === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Notification not found"
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Notification marked as read"
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// MARK ALL NOTIFICATIONS AS READ
+app.patch(
+  "/api/notifications/read-all",
+  authenticateToken,
+  (req, res, next) => {
+    try {
+      const result = db.prepare(`
+        UPDATE notifications
+        SET is_read = 1
+        WHERE user_id = ?
+          AND is_read = 0
+      `).run(req.user.id);
+
+      res.json({
+        success: true,
+        message: "All notifications marked as read",
+        updatedCount: result.changes
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // --------------------------------------------------
 // HANDLE INVALID ROUTES
@@ -1001,11 +1645,22 @@ app.use((err, req, res, next) => {
 });
 
 // --------------------------------------------------
-// START SERVER
+// EXPORT EXPRESS APP
 // --------------------------------------------------
 
-app.listen(PORT, () => {
-  console.log(`Helpdesk backend running on port ${PORT}`);
-  console.log(`DynamoDB table: ${TABLE_NAME}`);
-  console.log(`AWS region: ${process.env.AWS_REGION}`);
-});
+export default app;
+
+// --------------------------------------------------
+// START SERVER ONLY WHEN RUN DIRECTLY
+// --------------------------------------------------
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  app.listen(PORT, () => {
+    console.log(`Helpdesk backend running on port ${PORT}`);
+    console.log(`DynamoDB table: ${TABLE_NAME}`);
+    console.log(`AWS region: ${process.env.AWS_REGION}`);
+  });
+}

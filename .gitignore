@@ -41,3 +41,12 @@ backend/data/
 # Nested environment files
 **/.env
 **/.env.*
+
+# Test coverage reports
+**/coverage/
+
+# Local source backups
+*.backup-*.js
+
+# Local account maintenance scripts
+backend/create-support-engineer.js
