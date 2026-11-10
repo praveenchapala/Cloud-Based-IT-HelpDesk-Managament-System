@@ -21,9 +21,24 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const allowedOrigins = (
+  process.env.FRONTEND_URL || "http://localhost:5173"
+)
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: "http://localhost:5173"
+    origin: (origin, callback) => {
+      // Allow requests without an Origin header, such as server-to-server calls.
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true
   })
 );
 
@@ -136,8 +151,9 @@ const getSlaStatus = (ticket, currentTime = Date.now()) => {
     ticket.slaPolicy.responseMinutes
   );
 
-  // Use the first recorded resolution to preserve the original SLA outcome
-  // even if the ticket is subsequently reopened.
+  // SLA resolution measures the first successful resolution. Reopening is
+  // tracked separately in resolutionHistory and does not erase that historical
+  // first-resolution result or restart the original SLA clock.
   const resolutionHistory = Array.isArray(ticket.resolutionHistory)
     ? ticket.resolutionHistory
     : [];
@@ -589,6 +605,39 @@ const denyTicketAccess = (res) => {
 
 
 // --------------------------------------------------
+// DYNAMODB OPTIMISTIC CONCURRENCY CONTROL
+// --------------------------------------------------
+
+// Older tickets do not have a version attribute. Treat those records as
+// version 0; the first successful update writes version 1.
+const getTicketVersion = (ticket) => {
+  if (ticket.version === undefined || ticket.version === null) {
+    return 0;
+  }
+
+  if (!Number.isSafeInteger(ticket.version) || ticket.version < 0) {
+    throw new Error(`Ticket ${ticket.id} has an invalid version value`);
+  }
+
+  return ticket.version;
+};
+
+// Every ticket mutation must use this condition together with a version
+// increment. If another request updates the item after our GetCommand,
+// DynamoDB rejects this write instead of silently overwriting that update.
+const buildTicketWriteCondition = (ticket) => ({
+  ConditionExpression:
+    "attribute_exists(id) AND (attribute_not_exists(#version) OR #version = :expectedVersion)",
+  ExpressionAttributeNames: {
+    "#version": "version"
+  },
+  ExpressionAttributeValues: {
+    ":expectedVersion": getTicketVersion(ticket)
+  }
+});
+
+
+// --------------------------------------------------
 // NOTIFICATION CREATION HELPERS
 // --------------------------------------------------
 
@@ -807,6 +856,7 @@ app.post(
 
       const updatedTicket = {
         ...currentTicket,
+        version: getTicketVersion(currentTicket) + 1,
         replies,
         activityHistory
       };
@@ -825,7 +875,7 @@ app.post(
         new PutCommand({
           TableName: TABLE_NAME,
           Item: updatedTicket,
-          ConditionExpression: "attribute_exists(id)"
+          ...buildTicketWriteCondition(currentTicket)
         })
       );
 
@@ -986,6 +1036,7 @@ app.post(
 
       const newTicket = {
         id: ticketId,
+        version: 1,
         createdAt,
         ...slaDeadlines,
         title: title.trim(),
@@ -1162,7 +1213,8 @@ app.put(
 
       const updatedTicket = {
         ...currentTicket,
-        ...normalizedUpdates
+        ...normalizedUpdates,
+        version: getTicketVersion(currentTicket) + 1
       };
 
       // --------------------------------------------------
@@ -1175,11 +1227,18 @@ app.put(
 
 let slaChangeDetails = null;
 
-if (priorityChanged && currentTicket.createdAt) {
-  const recalculatedSla = calculateSlaDeadlines(
-    normalizedUpdates.priority,
-    currentTicket.createdAt
-  );
+if (priorityChanged) {
+  const slaSourceTicket = getTicketWithSla(currentTicket);
+
+  if (slaSourceTicket.createdAt) {
+    // Persist the best available historical creation timestamp for legacy
+    // records when their priority is changed.
+    updatedTicket.createdAt = slaSourceTicket.createdAt;
+
+    const recalculatedSla = calculateSlaDeadlines(
+      normalizedUpdates.priority,
+      slaSourceTicket.createdAt
+    );
 
   const oldResponseDeadline = currentTicket.slaResponseDueAt ?? null;
   const oldResolutionDeadline = currentTicket.slaResolutionDueAt ?? null;
@@ -1205,6 +1264,7 @@ if (priorityChanged && currentTicket.createdAt) {
     oldResolutionDeadline,
     newResolutionDeadline: updatedTicket.slaResolutionDueAt ?? oldResolutionDeadline
   };
+  }
 }
 
       const activityHistory = Array.isArray(currentTicket.activityHistory)
@@ -1316,7 +1376,7 @@ updatedTicket.activityHistory = activityHistory;
         new PutCommand({
           TableName: TABLE_NAME,
           Item: updatedTicket,
-          ConditionExpression: "attribute_exists(id)"
+          ...buildTicketWriteCondition(currentTicket)
         })
       );
 
@@ -1437,6 +1497,7 @@ app.put(
 
       const updatedTicket = {
         ...currentTicket,
+        version: getTicketVersion(currentTicket) + 1,
         assignedTo: newEngineer,
         assignedAt: new Date().toISOString(),
         assignmentStatus: "Assigned",
@@ -1447,7 +1508,7 @@ app.put(
         new PutCommand({
           TableName: TABLE_NAME,
           Item: updatedTicket,
-          ConditionExpression: "attribute_exists(id)"
+          ...buildTicketWriteCondition(currentTicket)
         })
       );
 
@@ -1511,7 +1572,7 @@ app.delete(
         new DeleteCommand({
           TableName: TABLE_NAME,
           Key: { id: ticketId },
-          ConditionExpression: "attribute_exists(id)"
+          ...buildTicketWriteCondition(result.Item)
         })
       );
 
@@ -1636,6 +1697,14 @@ app.use((req, res) => {
 // --------------------------------------------------
 
 app.use((err, req, res, next) => {
+  if (err?.name === "ConditionalCheckFailedException") {
+    return res.status(409).json({
+      success: false,
+      message:
+        "This ticket was changed by another user or no longer exists. Refresh the ticket and try again."
+    });
+  }
+
   console.error("Backend error:", err);
 
   res.status(500).json({

@@ -1419,7 +1419,7 @@ test(
       "/api/tickets/1001",
       tokens.admin,
       {
-        priority: "Critical"
+        priority: "Urgent"
       }
     );
 
@@ -2233,8 +2233,34 @@ test("Activity history handles a DynamoDB failure", async () => {
     dynamoDB.send = originalMockSend;
   }
 });
+
 test("Ticket update handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
+
+  dynamoDB.send = async () => {
+    throw new Error("Simulated ticket update failure");
+  };
+
+  try {
+    const response = await apiRequest(
+      "PUT",
+      `/api/tickets/${ticketId}`,
+      tokens.admin,
+      { title: "Updated ticket title" }
+    );
+
+    const result = await response.json();
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(result, {
+      success: false,
+      message: "Internal server error"
+    });
+  } finally {
+    dynamoDB.send = originalMockSend;
+  }
+});
+
 test("Ticket assignment handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
 
@@ -2263,38 +2289,11 @@ test("Ticket assignment handles a DynamoDB failure", async () => {
     const result = await response.json();
 
     assert.equal(response.status, 500);
-
     assert.deepEqual(result, {
       success: false,
       message: "Internal server error"
     });
   } finally {
-    dynamoDB.send = originalMockSend;
-  }
-});
-  // Simulate a DynamoDB failure.
-  dynamoDB.send = async () => {
-    throw new Error("Simulated ticket update failure");
-  };
-
-  try {
-    const response = await apiRequest(
-      "PUT",
-      `/api/tickets/${ticketId}`,
-      tokens.admin,
-      { title: "Updated ticket title" }
-    );
-
-    const result = await response.json();
-
-    assert.equal(response.status, 500);
-
-    assert.deepEqual(result, {
-      success: false,
-      message: "Internal server error"
-    });
-  } finally {
-    // Restore the original mock.
     dynamoDB.send = originalMockSend;
   }
 });

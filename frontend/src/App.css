@@ -3223,3 +3223,409 @@ button:focus-visible,a:focus-visible{outline:3px solid rgba(65,105,225,.28);outl
     grid-template-columns: 1fr;
   }
 }
+
+/* =========================================================
+   ResolveIT responsive layout overrides
+   Appended intentionally: preserves existing desktop styling
+   and component rules while normalizing tablet/mobile layout.
+   ========================================================= */
+
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+.app-shell {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.sidebar {
+  min-width: 0;
+}
+
+.main-area {
+  min-width: 0;
+  width: 0;
+  flex: 1 1 auto;
+}
+
+.page-content {
+  min-width: 0;
+  width: 100%;
+}
+
+.stats-grid,
+.dashboard-grid,
+.sla-stats-grid,
+.form-grid,
+.details-content-grid,
+.details-info-grid {
+  min-width: 0;
+}
+
+.table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ticket-table {
+  min-width: 700px;
+}
+
+.topbar-actions,
+.topbar-left {
+  min-width: 0;
+}
+
+.topbar-popover,
+.notification-popover,
+.account-popover {
+  max-width: calc(100vw - 24px);
+}
+
+.mobile-menu-button,
+.mobile-close {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 1050px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1.2fr) minmax(250px, 0.8fr);
+  }
+
+  .details-content-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 0.72fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    display: flex;
+    min-height: 100vh;
+    height: auto;
+  }
+
+  .main-area {
+    min-height: 100vh;
+  }
+
+  .dashboard-grid,
+  .details-content-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .details-side-column {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .topbar {
+    gap: 12px;
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .page-content {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .create-layout {
+    grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
+    gap: 18px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    display: block;
+    min-height: 100vh;
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 120;
+    inset: 0 auto 0 0;
+    width: min(286px, calc(100vw - 54px));
+    max-width: calc(100vw - 54px);
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateX(-105%);
+    transition: transform 220ms ease;
+    box-shadow: 18px 0 48px rgba(8, 20, 42, 0.2);
+  }
+
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  .mobile-overlay {
+    position: fixed;
+    z-index: 110;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: rgba(10, 19, 35, 0.52);
+    cursor: pointer;
+  }
+
+  .mobile-menu-button {
+    display: inline-grid;
+    flex: 0 0 40px;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+  }
+
+  .mobile-close {
+    display: inline-flex;
+  }
+
+  .main-area {
+    width: 100%;
+    min-height: 100vh;
+    margin-left: 0;
+  }
+
+  .topbar {
+    position: sticky;
+    z-index: 30;
+    top: 0;
+    min-height: 72px;
+    padding: 12px 18px;
+  }
+
+  .topbar-left {
+    flex: 1 1 auto;
+    gap: 10px;
+  }
+
+  .topbar-left > div {
+    min-width: 0;
+  }
+
+  .topbar h1 {
+    overflow: hidden;
+    max-width: 48vw;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-content {
+    padding: 22px 18px 28px;
+  }
+
+  .create-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .create-intro {
+    position: static;
+  }
+
+  .details-side-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tickets-page-heading,
+  .section-heading,
+  .details-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .filter-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .search-box {
+    flex: 1 1 220px;
+    min-width: 0;
+  }
+
+  .filter-select {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    min-height: 66px;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .topbar h1 {
+    max-width: 42vw;
+    font-size: 17px;
+  }
+
+  .topbar-actions {
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .topbar-account-button {
+    padding: 3px;
+  }
+
+  .topbar-popover {
+    right: -4px;
+    min-width: min(290px, calc(100vw - 24px));
+  }
+
+  .notification-popover {
+    right: -42px;
+    width: min(370px, calc(100vw - 24px));
+  }
+
+  .page-content {
+    padding: 18px 13px 24px;
+  }
+
+  .stats-grid,
+  .sla-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    min-width: 0;
+    padding: 13px;
+  }
+
+  .stat-value {
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .panel,
+  .tickets-page-panel,
+  .create-form,
+  .details-section-card,
+  .details-side-card {
+    min-width: 0;
+    padding: 15px;
+  }
+
+  .welcome-banner {
+    min-height: 0;
+    padding: 20px 16px;
+  }
+
+  .welcome-content {
+    min-width: 0;
+  }
+
+  .welcome-illustration {
+    display: none;
+  }
+
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .form-field,
+  .full-field {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .form-footer {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .form-footer button {
+    flex: 1 1 130px;
+  }
+
+  .details-hero {
+    padding: 17px;
+  }
+
+  .details-hero-main,
+  .details-hero-copy {
+    min-width: 0;
+  }
+
+  .details-info-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .details-toolbar {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .activity-history-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .page-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 380px) {
+  .stats-grid,
+  .sla-stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbar h1 {
+    max-width: 36vw;
+    font-size: 15px;
+  }
+
+  .page-content {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .panel,
+  .tickets-page-panel,
+  .create-form,
+  .details-section-card,
+  .details-side-card {
+    padding: 12px;
+  }
+
+  .notification-popover {
+    right: -46px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
+  }
+}

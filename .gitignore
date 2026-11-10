@@ -50,3 +50,7 @@ backend/data/
 
 # Local account maintenance scripts
 backend/create-support-engineer.js
+
+# Local backup files
+*.backup
+*.backup.*

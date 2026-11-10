@@ -1,3 +1,4 @@
+﻿
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -10,6 +11,7 @@ import {
 import "./index.css";
 
 import App from "./App.jsx";
+import LandingPage from "./pages/LandingPage.jsx";
 import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
@@ -20,13 +22,16 @@ createRoot(document.getElementById("root")).render(
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          {/* Public routes */}
+          {/* Public landing page */}
+          <Route path="/" element={<LandingPage />} />
+
+          {/* Authentication pages */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
 
           {/* Protected application */}
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<App />} />
+            <Route path="/app" element={<App />} />
           </Route>
 
           {/* Unknown URLs */}

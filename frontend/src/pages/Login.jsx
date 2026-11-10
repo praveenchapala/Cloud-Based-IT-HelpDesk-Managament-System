@@ -35,7 +35,7 @@ export default function Login() {
         email: formData.email.trim(),
         password: formData.password,
       });
-      navigate("/", { replace: true });
+      navigate("/app", { replace: true });
     } catch (err) {
       setError(
         err.response?.data?.message ||
