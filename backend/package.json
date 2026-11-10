@@ -6,7 +6,9 @@
   "scripts": {
     "test": "c8 --reporter=text --reporter=html node --test",
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "migrate:dry-run": "node scripts/migrate-sqlite-to-dynamodb.js",
+    "migrate:apply": "node scripts/migrate-sqlite-to-dynamodb.js --apply"
   },
   "keywords": [],
   "author": "",

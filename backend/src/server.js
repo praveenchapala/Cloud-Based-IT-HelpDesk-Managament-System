@@ -7,7 +7,23 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
 import { dynamoDB, TABLE_NAME } from "./dynamodb.js";
-import db from "./database.js";
+
+import {
+  findUserByEmail,
+  findUserByUserId,
+  findActiveStaff,
+  findActiveSupportEngineer,
+  createUser,
+  toPublicUser
+} from "./userRepository.js";
+
+import {
+  createNotification,
+  getNotificationsByUserId,
+  markNotificationAsRead,
+  markAllNotificationsAsRead
+} from "./notificationRepository.js";
+
 
 import {
   ScanCommand,
@@ -327,11 +343,9 @@ app.post("/api/auth/register", async (req, res, next) => {
       });
     }
 
-    // Public registration always creates an EMPLOYEE.
-    // Never accept a role from the registration request.
-    const existingUser = db.prepare(
-      "SELECT id FROM users WHERE email = ?"
-    ).get(normalizedEmail);
+    // Public registration always creates an EMPLOYEE. Never accept a role
+    // supplied by the client.
+    const existingUser = await findUserByEmail(normalizedEmail);
 
     if (existingUser) {
       return res.status(409).json({
@@ -340,35 +354,21 @@ app.post("/api/auth/register", async (req, res, next) => {
       });
     }
 
-    const userId = randomUUID();
     const passwordHash = await bcrypt.hash(password, 12);
-
-    const insertUser = db.prepare(`
-      INSERT INTO users (id, name, email, password_hash, role)
-      VALUES (?, ?, ?, ?, 'EMPLOYEE')
-    `);
-
-    insertUser.run(
-      userId,
-      normalizedName,
-      normalizedEmail,
-      passwordHash
-    );
-
-    const createdUser = db.prepare(`
-      SELECT id, name, email, role, is_active, created_at
-      FROM users
-      WHERE id = ?
-    `).get(userId);
+    const createdUser = await createUser({
+      name: normalizedName,
+      email: normalizedEmail,
+      passwordHash,
+      role: "EMPLOYEE"
+    });
 
     return res.status(201).json({
       success: true,
       message: "Account registered successfully",
-      data: createdUser
+      data: toPublicUser(createdUser)
     });
-
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (error.code === "USER_EMAIL_EXISTS") {
       return res.status(409).json({
         success: false,
         message: "An account with this email already exists"
@@ -401,11 +401,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    const user = db.prepare(`
-      SELECT id, name, email, password_hash, role, is_active
-      FROM users
-      WHERE email = ?
-    `).get(normalizedEmail);
+    const user = await findUserByEmail(normalizedEmail);
 
     if (!user) {
       return res.status(401).json({
@@ -414,7 +410,7 @@ app.post("/api/auth/login", async (req, res, next) => {
       });
     }
 
-    if (user.is_active !== 1) {
+    if (Number(user.is_active) !== 1) {
       return res.status(403).json({
         success: false,
         message: "Your account is inactive. Contact the administrator."
@@ -446,7 +442,9 @@ app.post("/api/auth/login", async (req, res, next) => {
       { role: user.role },
       process.env.JWT_SECRET,
       {
-        subject: user.id,
+        // The UUID is the stable application identity; the numeric id is
+        // only the DynamoDB partition key.
+        subject: user.userId,
         expiresIn: process.env.JWT_EXPIRES_IN || "1d",
         algorithm: "HS256"
       }
@@ -458,7 +456,7 @@ app.post("/api/auth/login", async (req, res, next) => {
       data: {
         token,
         user: {
-          id: user.id,
+          id: user.userId,
           name: user.name,
           email: user.email,
           role: user.role
@@ -475,7 +473,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 // JWT AUTHENTICATION MIDDLEWARE
 // --------------------------------------------------
 
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   if (!process.env.JWT_SECRET) {
     return res.status(500).json({
       success: false,
@@ -499,7 +497,6 @@ const authenticateToken = (req, res, next) => {
     decoded = jwt.verify(token, process.env.JWT_SECRET, {
       algorithms: ["HS256"]
     });
-
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({
@@ -522,30 +519,26 @@ const authenticateToken = (req, res, next) => {
   }
 
   try {
-    // Always retrieve the current user and role from SQLite.
-    const user = db.prepare(`
-      SELECT id, name, email, role, is_active
-      FROM users
-      WHERE id = ?
-    `).get(decoded.sub);
+    // Always load the current user and role from DynamoDB. Do not trust
+    // the role embedded in an old JWT.
+    const storedUser = await findUserByUserId(decoded.sub);
 
-    if (!user) {
+    if (!storedUser) {
       return res.status(401).json({
         success: false,
         message: "User account not found."
       });
     }
 
-    if (user.is_active !== 1) {
+    if (Number(storedUser.is_active) !== 1) {
       return res.status(403).json({
         success: false,
         message: "Your account is inactive."
       });
     }
 
-    req.user = user;
-    next();
-
+    req.user = toPublicUser(storedUser);
+    return next();
   } catch (error) {
     console.error("Authentication error:", error);
 
@@ -575,13 +568,40 @@ const authorizeRoles = (...allowedRoles) => (req, res, next) => {
 // TICKET ACCESS CONTROL
 // --------------------------------------------------
 
+// The table is shared by tickets, users, and notifications. Older tickets
+// predate recordType, so identify them by their ticket-specific attributes.
+// New tickets are explicitly stored with recordType: "TICKET".
+const isTicketRecord = (item) => {
+  if (!item || typeof item !== "object") return false;
+
+  if (item.recordType === "TICKET") return true;
+  if (item.recordType) return false;
+
+  // Backward compatibility for the existing legacy ticket records.
+  return (
+    typeof item.title === "string" &&
+    typeof item.description === "string" &&
+    typeof item.department === "string" &&
+    typeof item.status === "string" &&
+    typeof item.priority === "string"
+  );
+};
+
 const canAccessTicket = (user, ticket) => {
+  if (!isTicketRecord(ticket)) return false;
+
   if (user.role === "ADMIN") {
     return true;
   }
 
   if (user.role === "EMPLOYEE") {
-    return ticket.createdByUserId === user.id;
+    // Legacy tickets do not contain a stable owner ID or email. Do not infer
+    // ownership from the employee display name because names may not be unique.
+    // Those tickets remain accessible to admins and their assigned engineers
+    // until an explicit, verified owner mapping is added.
+    return ticket.createdByUserId === user.id ||
+      (ticket.createdByEmail &&
+       ticket.createdByEmail.toLowerCase() === user.email.toLowerCase());
   }
 
   if (user.role === "SUPPORT_ENGINEER") {
@@ -641,28 +661,38 @@ const buildTicketWriteCondition = (ticket) => ({
 // NOTIFICATION CREATION HELPERS
 // --------------------------------------------------
 
-const createNotification = ({ userId, ticketId, type, title, message }) => {
-  if (!userId || !ticketId) return;
+const safeCreateNotification = async (payload) => {
+  if (!payload?.userId || !payload?.ticketId) return null;
+
   try {
-    db.prepare(`
-      INSERT INTO notifications (id, user_id, ticket_id, type, title, message)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), userId, String(ticketId), type, title, message);
+    return await createNotification(payload);
   } catch (error) {
+    // A notification failure must not undo a ticket operation that has
+    // already been successfully persisted.
     console.error("Notification creation failed:", error);
+    return null;
   }
 };
 
-const notifyActiveStaff = ({ ticket, type, title, message }) => {
+const notifyActiveStaff = async ({ ticket, type, title, message }) => {
   try {
-    const staff = db.prepare(`
-      SELECT id FROM users
-      WHERE is_active = 1
-        AND role IN ('ADMIN', 'SUPPORT_ENGINEER')
-        AND id != ?
-    `).all(ticket.createdByUserId || "");
-    for (const recipient of staff) {
-      createNotification({ userId: recipient.id, ticketId: ticket.id, type, title, message });
+    const staff = await findActiveStaff(ticket.createdByUserId || "");
+
+    const results = await Promise.allSettled(
+      staff.map((recipient) =>
+        safeCreateNotification({
+          userId: recipient.userId,
+          ticketId: ticket.id,
+          type,
+          title,
+          message
+        })
+      )
+    );
+
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      console.error("Some staff notifications could not be created:", failures);
     }
   } catch (error) {
     console.error("Staff notification lookup failed:", error);
@@ -693,10 +723,13 @@ app.get("/api/tickets", authenticateToken, async (req, res, next) => {
       })
     );
 
-    const allTickets = result.Items || [];
+    const allRecords = result.Items || [];
 
-    // Filter tickets on the backend, not in React.
-    const tickets = allTickets
+    // Never return USER or NOTIFICATION records from the ticket endpoint.
+    // isTicketRecord also keeps compatibility with legacy tickets that have
+    // no recordType attribute.
+    const tickets = allRecords
+      .filter(isTicketRecord)
       .filter(ticket => canAccessTicket(req.user, ticket))
       .map(ticket => getTicketWithSla(ticket));
 
@@ -736,7 +769,7 @@ app.get(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -801,7 +834,7 @@ app.post(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -882,7 +915,7 @@ app.post(
       // Notify the other participant.
       if (isStaffReply) {
         if (currentTicket.createdByUserId !== req.user.id) {
-          createNotification({
+          await safeCreateNotification({
             userId: currentTicket.createdByUserId,
             ticketId,
             type: "TICKET_REPLY",
@@ -891,17 +924,13 @@ app.post(
           });
         }
       } else if (currentTicket.assignedTo) {
-        const assignedEngineer = db.prepare(`
-          SELECT id
-          FROM users
-          WHERE email = ?
-            AND role = 'SUPPORT_ENGINEER'
-            AND is_active = 1
-        `).get(currentTicket.assignedTo);
+        const assignedEngineer = await findActiveSupportEngineer(
+          currentTicket.assignedTo
+        );
 
         if (assignedEngineer) {
-          createNotification({
-            userId: assignedEngineer.id,
+          await safeCreateNotification({
+            userId: assignedEngineer.userId,
             ticketId,
             type: "TICKET_REPLY",
             title: "New employee reply",
@@ -947,7 +976,7 @@ app.get(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -1036,6 +1065,7 @@ app.post(
 
       const newTicket = {
         id: ticketId,
+        recordType: "TICKET",
         version: 1,
         createdAt,
         ...slaDeadlines,
@@ -1068,7 +1098,7 @@ app.post(
         })
       );
 
-      notifyActiveStaff({
+      await notifyActiveStaff({
         ticket: newTicket,
         type: "TICKET_CREATED",
         title: "New ticket created",
@@ -1147,7 +1177,7 @@ app.put(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -1383,7 +1413,7 @@ updatedTicket.activityHistory = activityHistory;
       const requesterId = currentTicket.createdByUserId;
       if (requesterId && requesterId !== req.user.id) {
         if (normalizedUpdates.status !== undefined && normalizedUpdates.status !== currentTicket.status) {
-          createNotification({
+          await safeCreateNotification({
             userId: requesterId, ticketId,
             type: normalizedUpdates.status === "Resolved" ? "TICKET_RESOLVED" : "STATUS_CHANGED",
             title: normalizedUpdates.status === "Resolved" ? "Your ticket was resolved" : "Ticket status updated",
@@ -1391,7 +1421,7 @@ updatedTicket.activityHistory = activityHistory;
           });
         }
         if (normalizedUpdates.priority !== undefined && normalizedUpdates.priority !== currentTicket.priority) {
-          createNotification({
+          await safeCreateNotification({
             userId: requesterId, ticketId, type: "PRIORITY_CHANGED",
             title: "Ticket priority updated",
             message: `Ticket #${ticketId} "${currentTicket.title}" priority changed from ${currentTicket.priority} to ${normalizedUpdates.priority}.`
@@ -1449,7 +1479,7 @@ app.put(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -1460,13 +1490,9 @@ app.put(
       const normalizedAssignedEmail = assignedTo.trim().toLowerCase();
 
       // Only assign tickets to active support engineers.
-      const supportEngineer = db.prepare(`
-        SELECT id, name, email
-        FROM users
-        WHERE email = ?
-          AND role = 'SUPPORT_ENGINEER'
-          AND is_active = 1
-      `).get(normalizedAssignedEmail);
+      const supportEngineer = await findActiveSupportEngineer(
+        normalizedAssignedEmail
+      );
 
       if (!supportEngineer) {
         return res.status(400).json({
@@ -1513,8 +1539,8 @@ app.put(
       );
 
       if (String(currentTicket.assignedTo || "").toLowerCase() !== supportEngineer.email.toLowerCase()) {
-        createNotification({
-          userId: supportEngineer.id, ticketId,
+        await safeCreateNotification({
+          userId: supportEngineer.userId, ticketId,
           type: isReassignment ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
           title: isReassignment ? "Ticket reassigned to you" : "New ticket assigned to you",
           message: `Ticket #${ticketId} "${currentTicket.title}" has been assigned to you.`
@@ -1561,7 +1587,7 @@ app.delete(
         })
       );
 
-      if (!result.Item) {
+      if (!result.Item || !isTicketRecord(result.Item)) {
         return res.status(404).json({
           success: false,
           message: "Ticket not found"
@@ -1592,35 +1618,15 @@ app.delete(
 // --------------------------------------------------
 
 // GET USER NOTIFICATIONS
-app.get("/api/notifications", authenticateToken, (req, res, next) => {
+app.get("/api/notifications", authenticateToken, async (req, res, next) => {
   try {
-    const notifications = db.prepare(`
-      SELECT
-        id,
-        ticket_id AS ticketId,
-        type,
-        title,
-        message,
-        is_read AS isRead,
-        created_at AS createdAt
-      FROM notifications
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-      LIMIT 100
-    `).all(req.user.id);
-
-    const unreadResult = db.prepare(`
-      SELECT COUNT(*) AS unreadCount
-      FROM notifications
-      WHERE user_id = ?
-        AND is_read = 0
-    `).get(req.user.id);
+    const result = await getNotificationsByUserId(req.user.id);
 
     res.status(200).json({
       success: true,
-      count: notifications.length,
-      unreadCount: unreadResult.unreadCount,
-      data: notifications
+      count: result.notifications.length,
+      unreadCount: result.unreadCount,
+      data: result.notifications
     });
   } catch (error) {
     next(error);
@@ -1631,23 +1637,21 @@ app.get("/api/notifications", authenticateToken, (req, res, next) => {
 app.patch(
   "/api/notifications/:id/read",
   authenticateToken,
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
-      const result = db.prepare(`
-        UPDATE notifications
-        SET is_read = 1
-        WHERE id = ?
-          AND user_id = ?
-      `).run(req.params.id, req.user.id);
+      const updated = await markNotificationAsRead(
+        req.params.id,
+        req.user.id
+      );
 
-      if (result.changes === 0) {
+      if (!updated) {
         return res.status(404).json({
           success: false,
           message: "Notification not found"
         });
       }
 
-      res.json({
+      return res.json({
         success: true,
         message: "Notification marked as read"
       });
@@ -1661,19 +1665,14 @@ app.patch(
 app.patch(
   "/api/notifications/read-all",
   authenticateToken,
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
-      const result = db.prepare(`
-        UPDATE notifications
-        SET is_read = 1
-        WHERE user_id = ?
-          AND is_read = 0
-      `).run(req.user.id);
+      const updatedCount = await markAllNotificationsAsRead(req.user.id);
 
-      res.json({
+      return res.json({
         success: true,
         message: "All notifications marked as read",
-        updatedCount: result.changes
+        updatedCount
       });
     } catch (error) {
       next(error);
