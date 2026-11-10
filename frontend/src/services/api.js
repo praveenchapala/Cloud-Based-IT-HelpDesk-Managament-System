@@ -4,23 +4,30 @@ import axios from "axios";
 const TOKEN_KEY = "resolveit_token";
 const USER_KEY = "resolveit_user";
 
+// Use the production API URL from Vercel environment variables.
+// Fall back to localhost for local development.
 const API = axios.create({
-  baseURL: "http://localhost:5000/api",
+  baseURL:
+    import.meta.env.VITE_API_BASE_URL ||
+    "http://localhost:5000/api",
   headers: {
     "Content-Type": "application/json",
   },
 });
 
 // Attach JWT to every protected API request.
-API.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem(TOKEN_KEY);
+API.interceptors.request.use(
+  (config) => {
+    const token = sessionStorage.getItem(TOKEN_KEY);
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
 
-  return config;
-});
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
 
 // Clear expired or invalid authentication sessions.
 API.interceptors.response.use(
