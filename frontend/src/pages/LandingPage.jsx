@@ -1,4 +1,4 @@
-
+import ThemeToggle from "../components/ThemeToggle";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -434,6 +434,7 @@ function Navbar() {
       </nav>
 
       <div className="lp-nav-actions">
+        <ThemeToggle />
         <Link to="/login">Sign in</Link>
 
         <Link to="/register" className="lp-nav-cta">

@@ -1,4 +1,4 @@
-
+import ThemeToggle from "./components/ThemeToggle";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -715,6 +715,7 @@ console.log("COMPLETE FIRST TICKET:", result?.[0]);
           </div>
 
           <div className="topbar-actions">
+            <ThemeToggle />
             <div className="system-status">
               <span className="status-dot" />
               System operational

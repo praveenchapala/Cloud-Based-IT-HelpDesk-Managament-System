@@ -15,29 +15,31 @@ import LandingPage from "./pages/LandingPage.jsx";
 import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
+
 import { AuthProvider } from "./context/AuthContext.jsx";
+import { ThemeProvider } from "./context/ThemeContext.jsx";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          {/* Public landing page */}
-          <Route path="/" element={<LandingPage />} />
+    <ThemeProvider>
+      <BrowserRouter>
+        <AuthProvider>
 
-          {/* Authentication pages */}
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
 
-          {/* Protected application */}
-          <Route element={<ProtectedRoute />}>
-            <Route path="/app" element={<App />} />
-          </Route>
+            <Route path="/login" element={<Login />} />
 
-          {/* Unknown URLs */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+            <Route path="/register" element={<Register />} />
+
+            <Route element={<ProtectedRoute />}>
+              <Route path="/app" element={<App />} />
+            </Route>
+
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>
 );
