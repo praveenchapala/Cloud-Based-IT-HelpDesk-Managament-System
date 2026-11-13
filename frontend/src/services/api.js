@@ -1,4 +1,3 @@
-
 import axios from "axios";
 
 const TOKEN_KEY = "resolveit_token";
@@ -149,6 +148,12 @@ export const markAllNotificationsRead = async () => {
     "/notifications/read-all"
   );
 
+  return response.data;
+};
+
+// ResolveBot AI chat API. The Axios interceptor attaches the JWT.
+export const sendChatMessage = async ({ message, history = [] }) => {
+  const response = await API.post("/chat", { message, history });
   return response.data;
 };
 

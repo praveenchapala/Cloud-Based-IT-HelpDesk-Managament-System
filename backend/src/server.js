@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { createChatRouter } from "./routes/chatRoutes.js";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -1679,6 +1680,12 @@ app.patch(
     }
   }
 );
+
+// --------------------------------------------------
+// RESOLVEBOT AI CHAT API
+// --------------------------------------------------
+
+app.use("/api/chat", createChatRouter({ authenticateToken }));
 
 // --------------------------------------------------
 // HANDLE INVALID ROUTES

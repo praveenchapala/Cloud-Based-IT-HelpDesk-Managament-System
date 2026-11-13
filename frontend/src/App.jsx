@@ -1,4 +1,5 @@
 import ThemeToggle from "./components/ThemeToggle";
+import ResolveBot from "./components/ResolveBot";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -993,6 +994,7 @@ console.log("COMPLETE FIRST TICKET:", result?.[0]);
           </footer>
         </div>
       </main>
+      <ResolveBot />
     </div>
   );
 }
