@@ -1,0 +1,33 @@
+.sla-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.sla-badge__copy { display: inline-flex; flex-direction: column; min-width: 0; }
+.sla-badge__copy strong { font-size: 11px; font-weight: 750; }
+.sla-badge__copy small { margin-top: 2px; font-size: 10px; opacity: .82; }
+.sla-badge--on-track { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+.sla-badge--at-risk { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.sla-badge--breached { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+.sla-badge--paused { color: #475569; background: #f1f5f9; border-color: #cbd5e1; }
+.sla-badge--met { color: #166534; background: #ecfdf5; border-color: #a7f3d0; }
+.sla-badge--no-sla { color: #64748b; background: #f8fafc; border-color: #e2e8f0; }
+.sla-badge--compact { padding: 5px 8px; gap: 5px; }
+.sla-badge--compact .sla-badge__copy strong { font-size: 10px; }
+:root[data-theme="dark"] .sla-badge--on-track { color: #bbf7d0; background: #123321; border-color: #245b3b; }
+:root[data-theme="dark"] .sla-badge--at-risk { color: #fde68a; background: #3b2b12; border-color: #76551c; }
+:root[data-theme="dark"] .sla-badge--breached { color: #fecaca; background: #3b1717; border-color: #762b2b; }
+:root[data-theme="dark"] .sla-badge--paused { color: #cbd5e1; background: #273449; border-color: #475569; }
+:root[data-theme="dark"] .sla-badge--met { color: #a7f3d0; background: #12352b; border-color: #21624d; }
+:root[data-theme="dark"] .sla-badge--no-sla { color: #cbd5e1; background: #273449; border-color: #475569; }
+@media (max-width: 380px) {
+  .sla-badge { white-space: normal; }
+  .sla-badge__copy small { overflow-wrap: anywhere; }
+}

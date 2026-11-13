@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { createChatRouter } from "./routes/chatRoutes.js";
+import { getNextSlaActionAt, runSlaSweep, slaSchedulerConfig } from "./slaSchedulerService.js";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -62,7 +63,7 @@ app.use(
 app.use(express.json());
 
 const validPriorities = ["Low", "Medium", "High", "Critical"];
-const validStatuses = ["Open", "In Progress", "Resolved"];
+const validStatuses = ["Open", "In Progress", "Waiting for User", "Resolved"];
 
 const SLA_POLICIES = {
   Critical: {
@@ -127,7 +128,7 @@ const getSlaStatus = (ticket, currentTime = Date.now()) => {
     };
   }
 
-  const calculateStatus = (completedAt, deadline, allowedMinutes) => {
+  const calculateStatus = (completedAt, deadline, allowedMinutes, evaluationTime = currentTime) => {
     const deadlineTime = new Date(deadline).getTime();
 
     if (!Number.isFinite(deadlineTime)) {
@@ -145,15 +146,14 @@ const getSlaStatus = (ticket, currentTime = Date.now()) => {
       return completedTime <= deadlineTime ? "MET" : "BREACHED";
     }
 
-    const remainingTime = deadlineTime - currentTime;
+    const remainingTime = deadlineTime - evaluationTime;
 
     if (remainingTime < 0) {
       return "BREACHED";
     }
 
-    // Mark as at risk when 20% or less of the SLA duration remains.
-    const atRiskThreshold =
-      allowedMinutes * 60 * 1000 * 0.2;
+    // Warn once 75% of the allowed SLA time has elapsed (25% remains).
+    const atRiskThreshold = allowedMinutes * 60 * 1000 * 0.25;
 
     if (remainingTime <= atRiskThreshold) {
       return "AT_RISK";
@@ -162,10 +162,16 @@ const getSlaStatus = (ticket, currentTime = Date.now()) => {
     return "ON_TRACK";
   };
 
+  // While waiting for the requester, freeze SLA evaluation at the pause time.
+  const effectiveTime = ticket.status === "Waiting for User" && ticket.slaPausedAt
+    ? new Date(ticket.slaPausedAt).getTime()
+    : currentTime;
+
   const responseStatus = calculateStatus(
     ticket.firstResponseAt,
     ticket.slaResponseDueAt,
-    ticket.slaPolicy.responseMinutes
+    ticket.slaPolicy.responseMinutes,
+    effectiveTime
   );
 
   // SLA resolution measures the first successful resolution. Reopening is
@@ -185,12 +191,15 @@ const getSlaStatus = (ticket, currentTime = Date.now()) => {
   const resolutionStatus = calculateStatus(
     resolutionCompletedAt,
     ticket.slaResolutionDueAt,
-    ticket.slaPolicy.resolutionMinutes
+    ticket.slaPolicy.resolutionMinutes,
+    effectiveTime
   );
 
-  let overall = "ON_TRACK";
+  let overall = ticket.status === "Waiting for User" ? "PAUSED" : "ON_TRACK";
 
-  if (
+  if (ticket.status === "Waiting for User") {
+    overall = "PAUSED";
+  } else if (
     responseStatus === "BREACHED" ||
     resolutionStatus === "BREACHED"
   ) {
@@ -704,11 +713,47 @@ const notifyActiveStaff = async ({ ticket, type, title, message }) => {
 // HEALTH CHECK (PUBLIC)
 // --------------------------------------------------
 
+// --------------------------------------------------
+// INTERNAL SLA SCHEDULER (external cron / EventBridge only)
+// --------------------------------------------------
+let slaSweepInProgress = false;
+let lastSlaSweepAt = 0;
+app.post("/api/internal/sla/run", async (req, res) => {
+  const expectedSecret = process.env.CRON_SECRET;
+  const suppliedSecret = req.get("x-cron-secret");
+  if (!expectedSecret || !suppliedSecret || suppliedSecret !== expectedSecret) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+
+  if (slaSweepInProgress) {
+    return res.status(409).json({ success: false, message: "SLA sweep already running" });
+  }
+  if (Date.now() - lastSlaSweepAt < 30_000) {
+    return res.status(429).json({ success: false, message: "SLA sweep rate limit exceeded" });
+  }
+
+  slaSweepInProgress = true;
+  lastSlaSweepAt = Date.now();
+  try {
+    const result = await runSlaSweep();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    console.error("SLA scheduler run failed:", error);
+    return res.status(500).json({ success: false, message: "SLA sweep failed" });
+  } finally {
+    slaSweepInProgress = false;
+  }
+});
+
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
     message: "Helpdesk backend is running",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    slaScheduler: {
+      mode: slaSchedulerConfig.shadowMode ? "shadow" : "live",
+      indexName: slaSchedulerConfig.indexName
+    }
   });
 });
 
@@ -905,6 +950,16 @@ app.post(
         updatedTicket.firstResponseBy = req.user.email;
       }
 
+      // The first response removes the response-warning event from the sparse index.
+      const nextSlaActionAt = getNextSlaActionAt(updatedTicket);
+      if (nextSlaActionAt) {
+        updatedTicket.openSlaPk = "ACTIVE";
+        updatedTicket.nextDeadlineAt = nextSlaActionAt;
+      } else {
+        delete updatedTicket.openSlaPk;
+        delete updatedTicket.nextDeadlineAt;
+      }
+
       await dynamoDB.send(
         new PutCommand({
           TableName: TABLE_NAME,
@@ -1070,6 +1125,7 @@ app.post(
         version: 1,
         createdAt,
         ...slaDeadlines,
+        openSlaPk: "ACTIVE",
         title: title.trim(),
 
         // Identity is derived from the authenticated user.
@@ -1090,6 +1146,7 @@ app.post(
 
         activityHistory: [creationActivity]
       };
+      newTicket.nextDeadlineAt = getNextSlaActionAt(newTicket);
 
       await dynamoDB.send(
         new PutCommand({
@@ -1249,6 +1306,45 @@ app.put(
       };
 
       // --------------------------------------------------
+      // PAUSE / RESUME SLA CLOCK FOR WAITING-FOR-USER STATUS
+      // Deadlines are shifted once on resume. The UI and API therefore use
+      // the same persisted UTC deadlines without subtracting pause time twice.
+      // --------------------------------------------------
+      const statusChangedForSla =
+        normalizedUpdates.status !== undefined &&
+        normalizedUpdates.status !== currentTicket.status;
+
+      if (statusChangedForSla) {
+        const transitionAt = new Date().toISOString();
+        if (
+          normalizedUpdates.status === "Waiting for User" &&
+          currentTicket.status !== "Waiting for User"
+        ) {
+          updatedTicket.slaPausedAt = transitionAt;
+        } else if (
+          currentTicket.status === "Waiting for User" &&
+          normalizedUpdates.status !== "Waiting for User" &&
+          currentTicket.slaPausedAt
+        ) {
+          const pausedAtMs = new Date(currentTicket.slaPausedAt).getTime();
+          const resumedAtMs = new Date(transitionAt).getTime();
+          const pauseDurationMs = Math.max(0, resumedAtMs - pausedAtMs);
+          for (const deadlineField of ["slaResponseDueAt", "slaResolutionDueAt"]) {
+            if (updatedTicket[deadlineField]) {
+              const deadlineMs = new Date(updatedTicket[deadlineField]).getTime();
+              if (Number.isFinite(deadlineMs)) {
+                updatedTicket[deadlineField] = new Date(deadlineMs + pauseDurationMs).toISOString();
+              }
+            }
+          }
+          updatedTicket.slaPausedTotalMs =
+            Number(currentTicket.slaPausedTotalMs || 0) + pauseDurationMs;
+          updatedTicket.slaLastResumedAt = transitionAt;
+          updatedTicket.slaPausedAt = null;
+        }
+      }
+
+      // --------------------------------------------------
       // UPDATE SLA WHEN TICKET PRIORITY CHANGES
       // --------------------------------------------------
 
@@ -1259,6 +1355,12 @@ app.put(
 let slaChangeDetails = null;
 
 if (priorityChanged) {
+  // A changed priority creates a new SLA deadline calculation. Reset warning
+  // and escalation markers so the new policy is evaluated independently.
+  delete updatedTicket.slaResponseWarnedAt;
+  delete updatedTicket.slaResolutionWarnedAt;
+  delete updatedTicket.slaBreachLevel;
+  delete updatedTicket.slaEscalatedAt;
   const slaSourceTicket = getTicketWithSla(currentTicket);
 
   if (slaSourceTicket.createdAt) {
@@ -1270,6 +1372,15 @@ if (priorityChanged) {
       normalizedUpdates.priority,
       slaSourceTicket.createdAt
     );
+    const accumulatedPauseMs = Number(currentTicket.slaPausedTotalMs || 0);
+    if (accumulatedPauseMs > 0) {
+      recalculatedSla.slaResponseDueAt = new Date(
+        new Date(recalculatedSla.slaResponseDueAt).getTime() + accumulatedPauseMs
+      ).toISOString();
+      recalculatedSla.slaResolutionDueAt = new Date(
+        new Date(recalculatedSla.slaResolutionDueAt).getTime() + accumulatedPauseMs
+      ).toISOString();
+    }
 
   const oldResponseDeadline = currentTicket.slaResponseDueAt ?? null;
   const oldResolutionDeadline = currentTicket.slaResolutionDueAt ?? null;
@@ -1403,6 +1514,16 @@ if (statusChanged) {
 
 updatedTicket.activityHistory = activityHistory;
 
+      // Maintain the sparse SLA scheduler index on every ticket status/deadline update.
+      const nextSlaActionAt = getNextSlaActionAt(updatedTicket);
+      if (nextSlaActionAt) {
+        updatedTicket.openSlaPk = "ACTIVE";
+        updatedTicket.nextDeadlineAt = nextSlaActionAt;
+      } else {
+        delete updatedTicket.openSlaPk;
+        delete updatedTicket.nextDeadlineAt;
+      }
+
       await dynamoDB.send(
         new PutCommand({
           TableName: TABLE_NAME,
@@ -1530,6 +1651,14 @@ app.put(
         assignmentStatus: "Assigned",
         activityHistory
       };
+      const nextSlaActionAt = getNextSlaActionAt(updatedTicket);
+      if (nextSlaActionAt) {
+        updatedTicket.openSlaPk = "ACTIVE";
+        updatedTicket.nextDeadlineAt = nextSlaActionAt;
+      } else {
+        delete updatedTicket.openSlaPk;
+        delete updatedTicket.nextDeadlineAt;
+      }
 
       await dynamoDB.send(
         new PutCommand({

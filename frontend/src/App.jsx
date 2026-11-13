@@ -1,5 +1,6 @@
 import ThemeToggle from "./components/ThemeToggle";
 import ResolveBot from "./components/ResolveBot";
+import SlaBadge from "./components/SlaBadge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -60,7 +61,7 @@ const emptyForm = {
   description: "",
 };
 
-const statusOptions = ["Open", "In Progress", "Resolved"];
+const statusOptions = ["Open", "In Progress", "Waiting for User", "Resolved"];
 const priorityOptions = ["Low", "Medium", "High", "Critical"];
 
 function unwrapResponse(response) {
@@ -178,18 +179,6 @@ function App() {
       const result = unwrapResponse(response);
 
       setTickets(Array.isArray(result) ? result : []);
-      console.log(
-  "SLA diagnostic:",
-  (Array.isArray(result) ? result : []).slice(0, 5).map((ticket) => ({
-    id: ticket.id,
-    priority: ticket.priority,
-    createdAt: ticket.createdAt,
-    slaResponseDueAt: ticket.slaResponseDueAt,
-    slaResolutionDueAt: ticket.slaResolutionDueAt,
-    slaStatus: ticket.slaStatus,
-  }))
-);
-console.log("COMPLETE FIRST TICKET:", result?.[0]);
     } catch (err) {
       setError(
         err.response?.data?.message ||
@@ -1418,7 +1407,54 @@ function TicketTable({
   }
 
   return (
-    <div className="table-scroll">
+    <>
+      <div className="ticket-mobile-list" aria-label="Support tickets">
+        {tickets.map((ticket) => (
+          <article className="ticket-mobile-card" key={`mobile-${ticket.id}`}>
+            <div className="ticket-mobile-card__top">
+              <div>
+                <span className="ticket-mobile-id">Ticket #{ticket.id}</span>
+                <h4>{ticket.title || "Untitled ticket"}</h4>
+                <p>{ticket.department || "General"} · {formatDate(getTicketDate(ticket))}</p>
+              </div>
+              <SlaBadge ticket={ticket} compact />
+            </div>
+            <div className="ticket-mobile-meta">
+              <span className={`priority-badge ${(ticket.priority || "Medium").toLowerCase()}`}><span />{ticket.priority || "Medium"}</span>
+              <StatusBadge status={ticket.status} />
+            </div>
+            <div className="ticket-mobile-assignee">
+              <span>Assigned engineer</span>
+              <strong>{ticket.assignedTo || "Unassigned"}</strong>
+            </div>
+            <div className="ticket-mobile-actions">
+              <button type="button" className="button-secondary" onClick={() => onViewTicket?.(ticket.id)}>View details</button>
+              {canUpdateStatus && onStatusChange && (
+                <select
+                  className="status-select"
+                  value={ticket.status || "Open"}
+                  disabled={updatingTicketId === ticket.id}
+                  onChange={(event) => onStatusChange(ticket.id, event.target.value)}
+                  aria-label={`Change status for ticket ${ticket.id}`}
+                >
+                  {statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+              )}
+              {showAdminActions && onAssign && (
+                <button type="button" className="button-secondary" onClick={() => onAssign(ticket)}>
+                  {ticket.assignedTo ? "Reassign" : "Assign"}
+                </button>
+              )}
+              {showAdminActions && onDelete && (
+                <button type="button" className="delete-button" onClick={() => onDelete(ticket.id)} disabled={deletingTicketId === ticket.id} aria-label={`Delete ticket ${ticket.id}`}>
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="table-scroll">
       <table className="ticket-table">
         <thead>
           <tr>
@@ -1427,6 +1463,7 @@ function TicketTable({
             <th>Requested by</th>
             <th>Priority</th>
             <th>Status</th>
+            <th>Resolution SLA</th>
             <th>Assigned engineer</th>
             <th>Date created</th>
             {!compact && showAdminActions && <th>Actions</th>}
@@ -1500,6 +1537,9 @@ function TicketTable({
                   <StatusBadge status={ticket.status} />
                 )}
               </td>
+              <td className="ticket-sla-cell">
+                <SlaBadge ticket={ticket} compact />
+              </td>
               <td>
                 {ticket.assignedTo ? (
                   <div className="requester-cell">
@@ -1536,7 +1576,8 @@ function TicketTable({
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1622,6 +1663,26 @@ function TicketDetailsPage({
               <div className="details-info-item"><span>Date submitted</span><strong>{createdDate}</strong></div>
               <div className="details-info-item"><span>Assigned engineer</span><strong>{ticket.assignedTo || "Unassigned"}</strong></div>
             </div>
+          </section>
+
+          <section className="panel details-section-card sla-details-card">
+            <div className="details-section-heading">
+              <div className="details-section-icon control-icon"><Clock3 size={18} /></div>
+              <div><h3>Service level agreement</h3><p>Deadlines are shown in your device's local timezone</p></div>
+            </div>
+            <div className="sla-details-grid">
+              <div className="sla-detail-item">
+                <span>First response</span>
+                <SlaBadge ticket={ticket} type="response" />
+                <small>{ticket.slaResponseDueAt ? `Due ${formatDateTime(ticket.slaResponseDueAt)}` : "No response deadline"}</small>
+              </div>
+              <div className="sla-detail-item">
+                <span>Resolution</span>
+                <SlaBadge ticket={ticket} type="resolution" />
+                <small>{ticket.slaResolutionDueAt ? `Due ${formatDateTime(ticket.slaResolutionDueAt)}` : "No resolution deadline"}</small>
+              </div>
+            </div>
+            {ticket.status === "Waiting for User" && <p className="sla-pause-note">The SLA clock is paused while this ticket is waiting for the requester.</p>}
           </section>
 
           <section className="panel details-section-card description-card">
