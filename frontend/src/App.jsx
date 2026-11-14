@@ -1,6 +1,7 @@
 import ThemeToggle from "./components/ThemeToggle";
 import ResolveBot from "./components/ResolveBot";
 import SlaBadge from "./components/SlaBadge";
+import IncidentCommandCenter from "./components/IncidentCommandCenter";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -21,7 +22,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings,
   ShieldCheck,
   Ticket,
   Trash2,
@@ -223,7 +223,14 @@ function App() {
       }
 
       setNotificationsOpen(false);
-      openTicket(notification.ticketId);
+      if (notification.incidentId) {
+        setActivePage("Incidents");
+        setMobileMenuOpen(false);
+        setError("");
+        setSuccess("");
+      } else {
+        openTicket(notification.ticketId);
+      }
     } catch (err) {
       setNotificationError(
         err.response?.data?.message || "Unable to update this notification."
@@ -254,17 +261,26 @@ function App() {
   }
 
   useEffect(() => {
-    loadTickets();
+    const initialLoad = window.setTimeout(() => {
+      void loadTickets();
+    }, 0);
+
+    return () => window.clearTimeout(initialLoad);
   }, []);
 
   useEffect(() => {
-    loadNotifications();
+    const initialLoad = window.setTimeout(() => {
+      void loadNotifications();
+    }, 0);
 
-    const notificationInterval = setInterval(() => {
-      loadNotifications();
+    const notificationInterval = window.setInterval(() => {
+      void loadNotifications();
     }, 30000);
 
-    return () => clearInterval(notificationInterval);
+    return () => {
+      window.clearTimeout(initialLoad);
+      window.clearInterval(notificationInterval);
+    };
   }, []);
 
   useEffect(() => {
@@ -309,12 +325,16 @@ function App() {
   }
 
   useEffect(() => {
-    if (activePage === "Ticket Details" && selectedTicketId !== null) {
-      loadTicketActivities(selectedTicketId);
-    } else {
-      setActivities([]);
-      setActivitiesError("");
-    }
+    const taskId = window.setTimeout(() => {
+      if (activePage === "Ticket Details" && selectedTicketId !== null) {
+        void loadTicketActivities(selectedTicketId);
+      } else {
+        setActivities([]);
+        setActivitiesError("");
+      }
+    }, 0);
+
+    return () => window.clearTimeout(taskId);
   }, [activePage, selectedTicketId]);
 
   const stats = useMemo(() => {
@@ -582,7 +602,9 @@ function App() {
         ? isAdmin ? "All tickets" : isSupportEngineer ? "Assigned tickets" : "My tickets"
         : activePage === "Ticket Details"
           ? "Ticket details"
-          : "Dashboard";
+          : activePage === "Incidents"
+            ? "Incident Command Center"
+            : "Dashboard";
 
   return (
     <div className="app-shell">
@@ -641,6 +663,16 @@ function App() {
             <Plus size={19} />
             <span>Create ticket</span>
           </button>
+
+          {(isAdmin || isSupportEngineer) && (
+            <button
+              className={`nav-link ${activePage === "Incidents" ? "active" : ""}`}
+              onClick={() => navigate("Incidents")}
+            >
+              <AlertCircle size={19} />
+              <span>Incidents</span>
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-bottom">
@@ -889,6 +921,7 @@ function App() {
 
           {activePage === "Ticket Details" && (
             <TicketDetailsPage
+              key={selectedTicketId ?? "ticket-not-selected"}
               ticket={tickets.find(
                 (ticket) => String(ticket.id) === String(selectedTicketId)
               )}
@@ -906,6 +939,10 @@ function App() {
               canUpdateStatus={canUpdateStatus}
               isAdmin={isAdmin}
             />
+          )}
+
+          {activePage === "Incidents" && (isAdmin || isSupportEngineer) && (
+            <IncidentCommandCenter isAdmin={isAdmin} />
           )}
 
           {activePage === "Create Ticket" && (
@@ -1599,11 +1636,7 @@ function TicketDetailsPage({
 }) {
   const [showAllActivities, setShowAllActivities] = useState(false);
 
-  useEffect(() => {
-    setShowAllActivities(false);
-  }, [ticket?.id]);
-
-  const visibleActivities = showAllActivities
+const visibleActivities = showAllActivities
     ? activities
     : activities.slice(0, 2);
 

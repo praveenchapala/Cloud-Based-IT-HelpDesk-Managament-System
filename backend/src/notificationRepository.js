@@ -54,6 +54,7 @@ function toPublicNotification(notification) {
   return {
     id: notification.notificationId,
     ticketId: notification.ticketId,
+    incidentId: notification.incidentId || null,
     type: notification.type,
     title: notification.title,
     message: notification.message,
@@ -67,7 +68,8 @@ export async function createNotification({
   ticketId,
   type,
   title,
-  message
+  message,
+  incidentId = null
 }) {
   if (!userId || ticketId === undefined || ticketId === null) return null;
 
@@ -85,6 +87,7 @@ export async function createNotification({
       sourceId: notificationId,
       userId,
       ticketId: normalizedTicketId,
+      ...(incidentId ? { incidentId } : {}),
       type,
       title,
       message,
