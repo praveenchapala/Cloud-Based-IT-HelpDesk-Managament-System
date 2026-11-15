@@ -1,9 +1,9 @@
 .resolvebot-root {
   --rb-primary: #3157d5;
-  --rb-surface: var(--card-bg, #ffffff);
-  --rb-text: var(--text-primary, #172033);
-  --rb-muted: var(--text-secondary, #64748b);
-  --rb-border: var(--border-color, #e2e8f0);
+  --rb-surface: var(--theme-card, #ffffff);
+  --rb-text: var(--theme-text, #172033);
+  --rb-muted: var(--theme-muted, #64748b);
+  --rb-border: var(--theme-border, #e2e8f0);
   position: fixed;
   right: 24px;
   bottom: 24px;
@@ -12,78 +12,197 @@
 }
 
 .resolvebot-launcher {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 54px;
-  padding: 0 19px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--rb-primary);
+  display: grid;
+  place-items: center;
+  width: 66px;
+  height: 66px;
+  min-width: 66px;
+  min-height: 66px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  background: linear-gradient(145deg, #4169e1, #294fc8);
   color: #fff;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 650;
   cursor: pointer;
-  box-shadow: 0 8px 26px rgba(30, 64, 175, 0.28);
-  transition: transform 160ms ease, box-shadow 160ms ease;
+  box-shadow: 0 9px 28px rgba(30, 64, 175, 0.34), 0 0 0 6px rgba(65, 105, 225, 0.10);
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+  animation: resolvebot-launcher-in 420ms cubic-bezier(.2,.8,.2,1) both;
 }
 
-.resolvebot-launcher:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(30, 64, 175, 0.34); }
-.resolvebot-launcher.is-open { width: 54px; padding: 0; }
+.resolvebot-launcher:hover {
+  transform: translateY(-3px) scale(1.035);
+  box-shadow: 0 13px 34px rgba(30, 64, 175, 0.40), 0 0 0 8px rgba(65, 105, 225, 0.12);
+}
+
+.resolvebot-launcher:focus-visible {
+  outline: 3px solid var(--theme-accent, #82a5ff);
+  outline-offset: 4px;
+}
+
+.resolvebot-launcher.is-open {
+  background: #263b70;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+  animation: none;
+}
+
+@keyframes resolvebot-launcher-in {
+  from { opacity: 0; transform: translateY(12px) scale(.86); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 .resolvebot-panel {
   position: absolute;
   right: 0;
-  bottom: 68px;
+  bottom: 82px;
   display: flex;
   flex-direction: column;
   width: min(390px, calc(100vw - 32px));
-  height: min(590px, calc(100dvh - 120px));
+  height: min(590px, calc(100dvh - 125px));
   min-height: 360px;
   overflow: hidden;
   border: 1px solid var(--rb-border);
   border-radius: 18px;
   background: var(--rb-surface);
   color: var(--rb-text);
-  box-shadow: 0 20px 65px rgba(15, 23, 42, 0.22);
+  box-shadow: 0 20px 65px rgba(15, 23, 42, 0.24);
+  transform-origin: bottom right;
+  animation: resolvebot-panel-in 190ms ease-out both;
 }
 
-.resolvebot-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--rb-border); background: var(--rb-surface); }
+@keyframes resolvebot-panel-in {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.resolvebot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--rb-border);
+  background: var(--rb-surface);
+}
 .resolvebot-heading { display: flex; align-items: center; gap: 11px; }
-.resolvebot-avatar, .resolvebot-message-avatar { display: grid; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #e8edff; color: var(--rb-primary); }
+.resolvebot-avatar,
+.resolvebot-message-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8edff;
+  color: #3157d5;
+}
 .resolvebot-avatar { width: 38px; height: 38px; }
 .resolvebot-heading h2 { margin: 0; color: var(--rb-text); font-size: 15px; font-weight: 700; }
 .resolvebot-heading p { display: flex; align-items: center; gap: 6px; margin: 3px 0 0; color: var(--rb-muted); font-size: 11px; }
 .resolvebot-online-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; }
 .resolvebot-header-actions { display: flex; gap: 5px; }
-.resolvebot-header-actions button { display: grid; width: 34px; height: 34px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--rb-muted); cursor: pointer; }
-.resolvebot-header-actions button:hover { background: rgba(100, 116, 139, 0.12); color: var(--rb-text); }
+.resolvebot-header-actions button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rb-muted);
+  cursor: pointer;
+}
+.resolvebot-header-actions button:hover { background: var(--theme-hover, rgba(100, 116, 139, 0.12)); color: var(--rb-text); }
 .resolvebot-header-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.resolvebot-messages { display: flex; flex: 1; flex-direction: column; gap: 15px; overflow-y: auto; padding: 17px 14px; background: var(--surface-secondary, #f8fafc); }
+.resolvebot-messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 15px;
+  overflow-y: auto;
+  padding: 17px 14px;
+  background: var(--theme-surface, #f8fafc);
+}
 .resolvebot-message-row { display: flex; align-items: flex-end; gap: 7px; }
 .resolvebot-message-row.user { justify-content: flex-end; }
 .resolvebot-message-avatar { width: 26px; height: 26px; }
-.resolvebot-message { max-width: 84%; padding: 10px 12px; border-radius: 13px 13px 13px 4px; background: var(--rb-surface); color: var(--rb-text); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }
-.resolvebot-message.user { border-radius: 13px 13px 4px 13px; background: var(--rb-primary); color: #fff; }
+.resolvebot-message {
+  max-width: 84%;
+  padding: 10px 12px;
+  border: 1px solid var(--rb-border);
+  border-radius: 13px 13px 13px 4px;
+  background: var(--rb-surface);
+  color: var(--rb-text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.resolvebot-message.user {
+  border-color: transparent;
+  border-radius: 13px 13px 4px 13px;
+  background: var(--rb-primary);
+  color: #fff;
+}
 .resolvebot-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
 .resolvebot-typing { display: flex; align-items: center; gap: 8px; color: var(--rb-muted); }
 .resolvebot-spinner { animation: resolvebot-spin 1s linear infinite; }
 @keyframes resolvebot-spin { to { transform: rotate(360deg); } }
-.resolvebot-error { margin: 0 0 0 33px; color: #b91c1c; font-size: 12px; line-height: 1.4; }
+.resolvebot-error { margin: 0 0 0 33px; color: #dc5555; font-size: 12px; line-height: 1.4; }
 
-.resolvebot-composer { display: flex; align-items: flex-end; gap: 9px; padding: 12px; border-top: 1px solid var(--rb-border); background: var(--rb-surface); }
-.resolvebot-composer textarea { flex: 1; min-width: 0; max-height: 110px; resize: vertical; padding: 10px 11px; border: 1px solid var(--rb-border); border-radius: 10px; outline: none; background: var(--rb-surface); color: var(--rb-text); font: inherit; font-size: 13px; line-height: 1.4; }
-.resolvebot-composer textarea:focus { border-color: var(--rb-primary); box-shadow: 0 0 0 3px rgba(49, 87, 213, 0.12); }
-.resolvebot-composer button { display: grid; flex: 0 0 auto; width: 39px; height: 39px; place-items: center; border: 0; border-radius: 10px; background: var(--rb-primary); color: #fff; cursor: pointer; }
+.resolvebot-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  padding: 12px;
+  border-top: 1px solid var(--rb-border);
+  background: var(--rb-surface);
+}
+.resolvebot-composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 110px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--rb-border);
+  border-radius: 10px;
+  outline: none;
+  background: var(--theme-input, var(--rb-surface));
+  color: var(--rb-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.resolvebot-composer textarea::placeholder { color: var(--rb-muted); opacity: .8; }
+.resolvebot-composer textarea:focus { border-color: var(--rb-primary); box-shadow: 0 0 0 3px rgba(49, 87, 213, 0.16); }
+.resolvebot-composer button {
+  display: grid;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: var(--rb-primary);
+  color: #fff;
+  cursor: pointer;
+}
 .resolvebot-composer button:disabled { opacity: 0.45; cursor: not-allowed; }
 .resolvebot-disclaimer { margin: 0; padding: 0 12px 11px; background: var(--rb-surface); color: var(--rb-muted); text-align: center; font-size: 10px; line-height: 1.4; }
 .resolvebot-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 520px) {
-  .resolvebot-root { right: 14px; bottom: 14px; }
-  .resolvebot-panel { right: -4px; bottom: 64px; width: calc(100vw - 20px); height: min(610px, calc(100dvh - 95px)); }
-  .resolvebot-launcher { min-height: 50px; padding: 0 15px; }
+  .resolvebot-root { right: 15px; bottom: 15px; }
+  .resolvebot-launcher { width: 60px; height: 60px; min-width: 60px; min-height: 60px; }
+  .resolvebot-panel {
+    right: -5px;
+    bottom: 74px;
+    width: min(390px, calc(100vw - 20px));
+    height: min(610px, calc(100dvh - 105px));
+    min-height: 320px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resolvebot-launcher,
+  .resolvebot-panel,
+  .resolvebot-spinner {
+    animation: none !important;
+    transition: none !important;
+  }
 }
