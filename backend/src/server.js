@@ -1,5 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { createChatRouter } from "./routes/chatRoutes.js";
+import { createIncidentRouter } from "./routes/incidentRoutes.js";
+import { evaluateTicketForIncident } from "./incidentCorrelationService.js";
 import { getNextSlaActionAt, runSlaSweep, slaSchedulerConfig } from "./slaSchedulerService.js";
 import express from "express";
 import cors from "cors";
@@ -710,6 +712,11 @@ const notifyActiveStaff = async ({ ticket, type, title, message }) => {
 };
 
 // --------------------------------------------------
+// INCIDENT COMMAND CENTER API
+// --------------------------------------------------
+app.use("/api/incidents", createIncidentRouter({ authenticateToken }));
+
+// --------------------------------------------------
 // HEALTH CHECK (PUBLIC)
 // --------------------------------------------------
 
@@ -1161,6 +1168,12 @@ app.post(
         type: "TICKET_CREATED",
         title: "New ticket created",
         message: `${newTicket.employee} created ticket #${newTicket.id}: ${newTicket.title}`
+      });
+
+      // Correlation runs after the ticket is persisted and must never delay or
+      // roll back ticket creation. Failures are logged for operational review.
+      void evaluateTicketForIncident(newTicket).catch((error) => {
+        console.error("Incident correlation failed after ticket creation:", error);
       });
 
       res.status(201).json({

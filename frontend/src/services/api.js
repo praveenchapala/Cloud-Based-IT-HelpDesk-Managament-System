@@ -158,3 +158,29 @@ export const sendChatMessage = async ({ message, history = [] }) => {
 };
 
 export default API;
+
+// Incident Command Center APIs
+export const getIncidents = async () => {
+  const response = await API.get("/incidents");
+  return response.data;
+};
+
+export const getIncidentById = async (id) => {
+  const response = await API.get(`/incidents/${id}`);
+  return response.data;
+};
+
+export const confirmIncident = async (id, severity = "P2") => {
+  const response = await API.patch(`/incidents/${id}/confirm`, { severity });
+  return response.data;
+};
+
+export const dismissIncident = async (id) => {
+  const response = await API.patch(`/incidents/${id}/dismiss`);
+  return response.data;
+};
+
+export const updateIncident = async (id, changes) => {
+  const response = await API.patch(`/incidents/${id}`, changes);
+  return response.data;
+};

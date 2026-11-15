@@ -1,4 +1,3 @@
-
 import {
   createContext,
   useContext,
@@ -17,11 +16,9 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    // Restore the session when the application reloads.
     if (getAuthToken()) {
       return getStoredUser();
     }
-
     return null;
   });
 
@@ -29,11 +26,9 @@ export function AuthProvider({ children }) {
 
   async function login(credentials) {
     setLoading(true);
-
     try {
       const loggedInUser = await loginUser(credentials);
       setUser(loggedInUser.user);
-
       return loggedInUser.user;
     } finally {
       setLoading(false);
@@ -63,14 +58,11 @@ export function AuthProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const context = useContext(AuthContext);
-
   if (!context) {
-    throw new Error(
-      "useAuth must be used inside an AuthProvider"
-    );
+    throw new Error("useAuth must be used inside an AuthProvider");
   }
-
   return context;
 }

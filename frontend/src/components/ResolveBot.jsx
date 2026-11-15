@@ -53,7 +53,11 @@ export default function ResolveBot() {
     try {
       const response = await sendChatMessage({
         message,
-        history: previousMessages.filter((item) => item.role !== "assistant" || item.content !== INITIAL_MESSAGE.content),
+        history: previousMessages.filter(
+          (item) =>
+            item.role !== "assistant" ||
+            item.content !== INITIAL_MESSAGE.content
+        ),
       });
       const answer = response?.data?.answer;
 
@@ -97,26 +101,52 @@ export default function ResolveBot() {
         >
           <header className="resolvebot-header">
             <div className="resolvebot-heading">
-              <span className="resolvebot-avatar"><Bot size={20} /></span>
+              <span className="resolvebot-avatar">
+                <Bot size={20} />
+              </span>
               <div>
                 <h2 id="resolvebot-title">ResolveBot</h2>
-                <p><span className="resolvebot-online-dot" /> IT support assistant</p>
+                <p>
+                  <span className="resolvebot-online-dot" /> IT support
+                  assistant
+                </p>
               </div>
             </div>
             <div className="resolvebot-header-actions">
-              <button type="button" onClick={clearConversation} disabled={isSending} aria-label="Clear conversation" title="Clear conversation">
+              <button
+                type="button"
+                onClick={clearConversation}
+                disabled={isSending}
+                aria-label="Clear conversation"
+                title="Clear conversation"
+              >
                 <Trash2 size={17} />
               </button>
-              <button type="button" onClick={() => setIsOpen(false)} aria-label="Close ResolveBot">
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                aria-label="Close ResolveBot"
+              >
                 <X size={19} />
               </button>
             </div>
           </header>
 
-          <div className="resolvebot-messages" ref={messageListRef} aria-live="polite">
+          <div
+            className="resolvebot-messages"
+            ref={messageListRef}
+            aria-live="polite"
+          >
             {messages.map((item) => (
-              <div className={`resolvebot-message-row ${item.role}`} key={item.id}>
-                {item.role === "assistant" && <span className="resolvebot-message-avatar"><Bot size={15} /></span>}
+              <div
+                className={`resolvebot-message-row ${item.role}`}
+                key={item.id}
+              >
+                {item.role === "assistant" && (
+                  <span className="resolvebot-message-avatar">
+                    <Bot size={15} />
+                  </span>
+                )}
                 <div className={`resolvebot-message ${item.role}`}>
                   <p>{item.content}</p>
                 </div>
@@ -124,18 +154,26 @@ export default function ResolveBot() {
             ))}
             {isSending && (
               <div className="resolvebot-message-row assistant">
-                <span className="resolvebot-message-avatar"><Bot size={15} /></span>
+                <span className="resolvebot-message-avatar">
+                  <Bot size={15} />
+                </span>
                 <div className="resolvebot-message assistant resolvebot-typing">
                   <LoaderCircle size={16} className="resolvebot-spinner" />
                   <span>Thinking...</span>
                 </div>
               </div>
             )}
-            {error && <p className="resolvebot-error" role="alert">{error}</p>}
+            {error && (
+              <p className="resolvebot-error" role="alert">
+                {error}
+              </p>
+            )}
           </div>
 
           <form className="resolvebot-composer" onSubmit={handleSubmit}>
-            <label className="resolvebot-sr-only" htmlFor="resolvebot-input">Message ResolveBot</label>
+            <label className="resolvebot-sr-only" htmlFor="resolvebot-input">
+              Message ResolveBot
+            </label>
             <textarea
               id="resolvebot-input"
               ref={inputRef}
@@ -152,11 +190,18 @@ export default function ResolveBot() {
               rows={2}
               disabled={isSending}
             />
-            <button type="submit" disabled={!input.trim() || isSending} aria-label="Send message">
+            <button
+              type="submit"
+              disabled={!input.trim() || isSending}
+              aria-label="Send message"
+            >
               <Send size={17} />
             </button>
           </form>
-          <p className="resolvebot-disclaimer">AI responses can be inaccurate. Don't share passwords or sensitive information.</p>
+          <p className="resolvebot-disclaimer">
+            AI responses can be inaccurate. Don't share passwords or sensitive
+            information.
+          </p>
         </section>
       )}
 
@@ -166,9 +211,9 @@ export default function ResolveBot() {
         onClick={() => setIsOpen((open) => !open)}
         aria-label={isOpen ? "Close ResolveBot" : "Open ResolveBot"}
         aria-expanded={isOpen}
+        title={isOpen ? "Close ResolveBot" : "Open ResolveBot"}
       >
-        {isOpen ? <X size={23} /> : <MessageCircle size={23} />}
-        {!isOpen && <span>Ask ResolveBot</span>}
+        {isOpen ? <X size={23} /> : <MessageCircle size={25} />}
       </button>
     </div>
   );

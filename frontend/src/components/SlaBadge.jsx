@@ -16,15 +16,18 @@ function formatDuration(milliseconds) {
 }
 
 export default function SlaBadge({ ticket, type = "resolution", compact = false }) {
-  const [, refresh] = useState(0);
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
-    const update = () => refresh((value) => value + 1);
+    const update = () => setNow(Date.now());
+    const initialUpdate = window.setTimeout(update, 0);
     const intervalId = window.setInterval(update, 30_000);
+
     document.addEventListener("visibilitychange", update);
     window.addEventListener("focus", update);
 
     return () => {
+      window.clearTimeout(initialUpdate);
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", update);
       window.removeEventListener("focus", update);
@@ -41,7 +44,6 @@ export default function SlaBadge({ ticket, type = "resolution", compact = false 
     : ticket.slaStatus?.resolution;
   const paused = ticket.status === "Waiting for User" && Boolean(ticket.slaPausedAt);
   const dueTime = deadline ? new Date(deadline).getTime() : NaN;
-  const now = Date.now();
 
   let state = "no-sla";
   let label = "SLA unavailable";

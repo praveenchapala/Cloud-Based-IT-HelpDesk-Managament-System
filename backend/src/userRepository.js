@@ -80,6 +80,15 @@ export async function findActiveStaff(excludedUserId = "") {
   return users.filter((user) => user.userId !== excludedUserId);
 }
 
+
+export async function findActiveAdmins() {
+  return scanUsers(
+    "#recordType = :userType AND #isActive = :active AND #role = :admin",
+    { ":userType": USER_RECORD_TYPE, ":active": 1, ":admin": "ADMIN" },
+    { "#recordType": "recordType", "#isActive": "is_active", "#role": "role" }
+  );
+}
+
 export async function findActiveSupportEngineer(email) {
   const user = await findUserByEmail(email);
 

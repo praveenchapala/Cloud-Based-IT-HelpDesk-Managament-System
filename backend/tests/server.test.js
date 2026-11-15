@@ -113,6 +113,9 @@ const originalTicket = {
 };
 
 let tickets = new Map();
+let userRecords = new Map();
+let notificationRecords = new Map();
+let nextNotificationPartitionId = 900000;
 
 // --------------------------------------------------
 // MOCK DYNAMODB
@@ -138,20 +141,102 @@ dynamoDB.send = async (command) => {
     }
 
     case "ScanCommand": {
+      const filterExpression = input.FilterExpression || "";
+      const expressionNames = input.ExpressionAttributeNames || {};
+      const expressionValues = input.ExpressionAttributeValues || {};
+
+      if (expressionValues[":userType"] === "USER") {
+        let matchingUsers = Array.from(userRecords.values());
+
+        for (const [alias, fieldName] of Object.entries(expressionNames)) {
+          const placeholders = [
+            ...filterExpression.matchAll(
+              new RegExp(`${alias}\\s*=\\s*(:[A-Za-z0-9_]+)`, "g")
+            )
+          ].map(match => match[1]);
+          if (placeholders.length === 0) continue;
+          const expectedValues = placeholders.map(
+            placeholder => expressionValues[placeholder]
+          );
+          matchingUsers = matchingUsers.filter(user =>
+            expectedValues.some(value => user[fieldName] === value)
+          );
+        }
+
+        return { Items: matchingUsers.map(item => structuredClone(item)) };
+      }
+
+      if (expressionValues[":recordType"] === "NOTIFICATION") {
+        let matchingNotifications = Array.from(notificationRecords.values());
+        for (const [alias, fieldName] of Object.entries(expressionNames)) {
+          const placeholders = [
+            ...filterExpression.matchAll(
+              new RegExp(`${alias}\\s*=\\s*(:[A-Za-z0-9_]+)`, "g")
+            )
+          ].map(match => match[1]);
+          if (placeholders.length === 0) continue;
+          const expectedValues = placeholders.map(
+            placeholder => expressionValues[placeholder]
+          );
+          matchingNotifications = matchingNotifications.filter(record =>
+            expectedValues.some(value => record[fieldName] === value)
+          );
+        }
+        return {
+          Items: matchingNotifications.map(item => structuredClone(item))
+        };
+      }
+
       return {
-        Items: Array.from(tickets.values()).map(
-          ticket => structuredClone(ticket)
-        )
+        Items: Array.from(tickets.values()).map(item => structuredClone(item))
       };
     }
 
     case "PutCommand": {
-      tickets.set(
-        input.Item.id,
-        structuredClone(input.Item)
-      );
+      const item = structuredClone(input.Item);
+      const existingRecords = [
+        ...tickets.values(),
+        ...userRecords.values(),
+        ...notificationRecords.values()
+      ];
+      if (
+        input.ConditionExpression === "attribute_not_exists(id)" &&
+        existingRecords.some(record => record.id === item.id)
+      ) {
+        const error = new Error("The conditional request failed.");
+        error.name = "ConditionalCheckFailedException";
+        throw error;
+      }
 
+      if (item.recordType === "USER") {
+        userRecords.set(item.userId, item);
+      } else if (item.recordType === "NOTIFICATION") {
+        notificationRecords.set(item.notificationId, item);
+      } else {
+        tickets.set(item.id, item);
+      }
       return {};
+    }
+
+    case "UpdateCommand": {
+      const values = input.ExpressionAttributeValues || {};
+      const notification = Array.from(notificationRecords.values()).find(
+        record => record.id === input.Key.id
+      );
+      if (
+        !notification ||
+        (values[":userId"] !== undefined && notification.userId !== values[":userId"]) ||
+        (values[":recordType"] !== undefined && notification.recordType !== values[":recordType"])
+      ) {
+        const error = new Error("The conditional request failed.");
+        error.name = "ConditionalCheckFailedException";
+        throw error;
+      }
+
+      if (values[":read"] !== undefined) {
+        notification.is_read = values[":read"];
+      }
+      return { Attributes: structuredClone(notification) };
     }
 
     case "DeleteCommand": {
@@ -240,6 +325,20 @@ before(async () => {
       "test-password-hash",
       user.role
     );
+
+    // Authentication and userRepository use the DynamoDB mock.
+    userRecords.set(user.id, {
+      id: 100000 + userRecords.size,
+      recordType: "USER",
+      userId: user.id,
+      sourceId: user.id,
+      name: user.name,
+      email: user.email.toLowerCase(),
+      password_hash: "test-password-hash",
+      role: user.role,
+      is_active: 1,
+      created_at: new Date().toISOString()
+    });
   }
 
   // Start Express on a temporary port.
@@ -255,6 +354,8 @@ before(async () => {
 // Reset test data before each test.
 beforeEach(() => {
   tickets.clear();
+  notificationRecords.clear();
+  nextNotificationPartitionId = 900000;
 
   tickets.set(
     ticketId,
@@ -460,24 +561,10 @@ test(
   async () => {
     const notificationId = "test-notification-b";
 
-    db.prepare(`
-      INSERT INTO notifications (
-        id,
-        user_id,
-        ticket_id,
-        type,
-        title,
-        message
-      )
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      notificationId,
-      users.employeeB.id,
-      String(ticketId),
-      "STATUS_CHANGED",
-      "Ticket updated",
-      "Your ticket status was changed."
-    );
+    insertTestNotification({
+      id: notificationId,
+      userId: users.employeeB.id
+    });
 
     const response = await apiRequest(
       "PATCH",
@@ -488,19 +575,9 @@ test(
     const result = await response.json();
 
     assert.equal(response.status, 404);
+    assert.equal(result.message, "Notification not found");
 
-    assert.equal(
-      result.message,
-      "Notification not found"
-    );
-
-    // Confirm the other user's notification remains unread.
-    const notification = db.prepare(`
-      SELECT is_read
-      FROM notifications
-      WHERE id = ?
-    `).get(notificationId);
-
+    const notification = notificationRecords.get(notificationId);
     assert.equal(notification.is_read, 0);
   }
 );
@@ -756,17 +833,7 @@ test(
     assert.equal(savedTicket.status, "In Progress");
 
     // Verify that the requester received a notification.
-    const notification = db.prepare(`
-      SELECT *
-      FROM notifications
-      WHERE user_id = ?
-        AND ticket_id = ?
-        AND type = 'STATUS_CHANGED'
-        AND title = 'Ticket status updated'
-    `).get(
-      users.employeeB.id,
-      String(ticketId)
-    );
+    const notification = findTestNotification({ userId: users.employeeB.id, ticketId, type: "STATUS_CHANGED", title: "Ticket status updated" });
 
     assert.ok(notification);
   }
@@ -782,25 +849,34 @@ function insertTestNotification({
   ticketId = "1001",
   isRead = 0
 }) {
-  db.prepare(`
-    INSERT INTO notifications (
-      id,
-      user_id,
-      ticket_id,
-      type,
-      title,
-      message,
-      is_read
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
+  const partitionId = nextNotificationPartitionId++;
+  notificationRecords.set(id, {
+    id: partitionId,
+    recordType: "NOTIFICATION",
+    notificationId: id,
+    sourceId: id,
     userId,
-    String(ticketId),
-    "TEST_NOTIFICATION",
-    "Test notification",
-    "Notification API automated test",
-    isRead
+    ticketId: String(ticketId),
+    type: "TEST_NOTIFICATION",
+    title: "Test notification",
+    message: "Notification API automated test",
+    is_read: isRead,
+    created_at: new Date().toISOString()
+  });
+}
+
+function findTestNotification({ userId, ticketId, type, title } = {}) {
+  return Array.from(notificationRecords.values()).find(record =>
+    (userId === undefined || record.userId === userId) &&
+    (ticketId === undefined || String(record.ticketId) === String(ticketId)) &&
+    (type === undefined || record.type === type) &&
+    (title === undefined || record.title === title)
+  );
+}
+
+function unreadNotificationsFor(userId) {
+  return Array.from(notificationRecords.values()).filter(
+    record => record.userId === userId && Number(record.is_read) === 0
   );
 }
 
@@ -843,12 +919,7 @@ test(
 
     assert.equal(result.count, result.data.length);
 
-    const expectedUnreadCount = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM notifications
-      WHERE user_id = ?
-        AND is_read = 0
-    `).get(users.employeeA.id).count;
+    const expectedUnreadCount = unreadNotificationsFor(users.employeeA.id).length;
 
     assert.equal(
       result.unreadCount,
@@ -885,11 +956,7 @@ test(
       "Notification marked as read"
     );
 
-    const savedNotification = db.prepare(`
-      SELECT is_read
-      FROM notifications
-      WHERE id = ?
-    `).get(notificationId);
+    const savedNotification = notificationRecords.get(notificationId);
 
     assert.equal(savedNotification.is_read, 1);
   }
@@ -919,12 +986,7 @@ test(
       userId: users.employeeB.id
     });
 
-    const expectedUpdatedCount = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM notifications
-      WHERE user_id = ?
-        AND is_read = 0
-    `).get(users.employeeA.id).count;
+    const expectedUpdatedCount = unreadNotificationsFor(users.employeeA.id).length;
 
     const response = await apiRequest(
       "PATCH",
@@ -948,21 +1010,12 @@ test(
     );
 
     // Employee A's notifications must now be read.
-    const employeeAUnreadCount = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM notifications
-      WHERE user_id = ?
-        AND is_read = 0
-    `).get(users.employeeA.id).count;
+    const employeeAUnreadCount = unreadNotificationsFor(users.employeeA.id).length;
 
     assert.equal(employeeAUnreadCount, 0);
 
     // Employee B's notification must remain unread.
-    const employeeBNotificationRecord = db.prepare(`
-      SELECT is_read
-      FROM notifications
-      WHERE id = ?
-    `).get(employeeBNotification);
+    const employeeBNotificationRecord = notificationRecords.get(employeeBNotification);
 
     assert.equal(
       employeeBNotificationRecord.is_read,
@@ -1028,13 +1081,7 @@ test(
 
     assert.equal(savedTicket.assignedTo, users.supportA.email);
 
-    const notification = db.prepare(`
-      SELECT *
-      FROM notifications
-      WHERE user_id = ?
-        AND ticket_id = ?
-        AND type = 'TICKET_ASSIGNED'
-    `).get(users.supportA.id, "1001");
+    const notification = findTestNotification({ userId: users.supportA.id, ticketId: "1001", type: "TICKET_ASSIGNED" });
 
     assert.ok(notification);
   }
@@ -1082,22 +1129,19 @@ test(
       email: "inactive.engineer@test.com"
     };
 
-    db.prepare(`
-      INSERT INTO users (
-        id,
-        name,
-        email,
-        password_hash,
-        role,
-        is_active
-      )
-      VALUES (?, ?, ?, ?, 'SUPPORT_ENGINEER', 0)
-    `).run(
-      inactiveEngineer.id,
-      inactiveEngineer.name,
-      inactiveEngineer.email,
-      "test-password-hash"
-    );
+    // findActiveSupportEngineer reads from the DynamoDB user repository.
+    userRecords.set(inactiveEngineer.id, {
+      id: 200001,
+      recordType: "USER",
+      userId: inactiveEngineer.id,
+      sourceId: inactiveEngineer.id,
+      name: inactiveEngineer.name,
+      email: inactiveEngineer.email,
+      password_hash: "test-password-hash",
+      role: "SUPPORT_ENGINEER",
+      is_active: 0,
+      created_at: new Date().toISOString()
+    });
 
     try {
       const response = await apiRequest(
@@ -1124,9 +1168,7 @@ test(
         users.supportB.email
       );
     } finally {
-      db.prepare(`
-        DELETE FROM users WHERE id = ?
-      `).run(inactiveEngineer.id);
+      userRecords.delete(inactiveEngineer.id);
     }
   }
 );
@@ -1249,13 +1291,7 @@ test(
     assert.equal(previousEngineerResponse.status, 403);
 
     // Verify reassignment notification.
-    const notification = db.prepare(`
-      SELECT *
-      FROM notifications
-      WHERE user_id = ?
-        AND ticket_id = ?
-        AND type = 'TICKET_REASSIGNED'
-    `).get(users.supportA.id, "1001");
+    const notification = findTestNotification({ userId: users.supportA.id, ticketId: "1001", type: "TICKET_REASSIGNED" });
 
     assert.ok(notification);
   }
@@ -1543,9 +1579,12 @@ test("Login rejects an email that does not exist", async () => {
 });
 
 test("Login rejects an inactive account", async () => {
-  db.prepare(
-    "UPDATE users SET is_active = 0 WHERE id = ?"
-  ).run(users.employeeA.id);
+  const employeeRecord = userRecords.get(users.employeeA.id);
+
+  userRecords.set(users.employeeA.id, {
+    ...employeeRecord,
+    is_active: 0
+  });
 
   try {
     const response = await apiRequest(
@@ -1560,9 +1599,10 @@ test("Login rejects an inactive account", async () => {
 
     assert.equal(response.status, 403);
   } finally {
-    db.prepare(
-      "UPDATE users SET is_active = 1 WHERE id = ?"
-    ).run(users.employeeA.id);
+    userRecords.set(users.employeeA.id, {
+      ...employeeRecord,
+      is_active: 1
+    });
   }
 });
 
@@ -1648,10 +1688,14 @@ test("Employee cannot delete a ticket", async () => {
 });
 
 test("Employee can retrieve only their own tickets", async () => {
+  // Create a second ticket owned by Employee A.
+  // Keep all requester identity fields consistent with the real ticket schema.
   tickets.set(1002, {
     ...tickets.get(1001),
-    ticketId: 1002,
+    id: 1002,
+    employee: users.employeeA.name,
     createdByUserId: users.employeeA.id,
+    createdByEmail: users.employeeA.email,
     createdBy: users.employeeA.email
   });
 
@@ -1664,9 +1708,16 @@ test("Employee can retrieve only their own tickets", async () => {
   const body = await response.json();
 
   assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+
+  // Employee B must not receive Employee A's ticket.
   assert.ok(body.data.every(
     ticket => ticket.createdByUserId === users.employeeB.id
   ));
+  assert.ok(
+    !body.data.some(ticket => Number(ticket.id) === 1002),
+    "Employee A's ticket must not appear in Employee B's response"
+  );
 });
 
 test("Support Engineer can retrieve only assigned tickets", async () => {
@@ -1729,10 +1780,12 @@ test("Unknown API endpoint returns 404", async () => {
 });
 test("Global error handler returns a safe 500 response", async () => {
   const originalMockSend = dynamoDB.send;
-
-  // Simulate an unexpected database failure.
-  dynamoDB.send = async () => {
-    throw new Error("Simulated DynamoDB failure");
+  dynamoDB.send = async (command) => {
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
+    }
+    throw new Error("Simulated route-level DynamoDB failure");
   };
 
   try {
@@ -1741,132 +1794,82 @@ test("Global error handler returns a safe 500 response", async () => {
       `/api/tickets/${ticketId}`,
       tokens.supportB
     );
-
     const result = await response.json();
-
     assert.equal(response.status, 500);
-
     assert.deepEqual(result, {
       success: false,
       message: "Internal server error"
     });
   } finally {
-    // Restore the original mock, even if the test fails.
     dynamoDB.send = originalMockSend;
   }
 });
+
 test("Delete ticket handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
-
   dynamoDB.send = async (command) => {
-    if (command.constructor.name === "GetCommand") {
-      return {
-        Item: structuredClone(originalTicket)
-      };
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
     }
-
+    if (command.constructor.name === "GetCommand") {
+      return { Item: structuredClone(originalTicket) };
+    }
     if (command.constructor.name === "DeleteCommand") {
       throw new Error("Simulated DynamoDB delete failure");
     }
+    return originalMockSend(command);
   };
 
   try {
-    const response = await apiRequest(
-      "DELETE",
-      `/api/tickets/${ticketId}`,
-      tokens.admin
-    );
-
+    const response = await apiRequest("DELETE", `/api/tickets/${ticketId}`, tokens.admin);
     const result = await response.json();
-
     assert.equal(response.status, 500);
-
-    assert.deepEqual(result, {
-      success: false,
-      message: "Internal server error"
-    });
+    assert.deepEqual(result, { success: false, message: "Internal server error" });
   } finally {
     dynamoDB.send = originalMockSend;
   }
 });
+
+async function assertNotificationRouteFails(path, method = "GET") {
+  const originalMockSend = dynamoDB.send;
+  dynamoDB.send = async (command) => {
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
+    }
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":recordType"] === "NOTIFICATION") {
+      throw new Error("Simulated notification DynamoDB failure");
+    }
+    if (command.constructor.name === "UpdateCommand") {
+      throw new Error("Simulated notification DynamoDB failure");
+    }
+    return originalMockSend(command);
+  };
+
+  try {
+    const response = await apiRequest(method, path, tokens.employeeA);
+    const result = await response.json();
+    assert.equal(response.status, 500);
+    assert.deepEqual(result, { success: false, message: "Internal server error" });
+  } finally {
+    dynamoDB.send = originalMockSend;
+  }
+}
+
 test("GET notifications handles a database failure", async () => {
-  db.exec("DROP TABLE notifications");
-
-  try {
-    const response = await apiRequest(
-      "GET",
-      "/api/notifications",
-      tokens.employeeA
-    );
-
-    const result = await response.json();
-
-    assert.equal(response.status, 500);
-
-    assert.deepEqual(result, {
-      success: false,
-      message: "Internal server error"
-    });
-  } finally {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        ticket_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        is_read INTEGER NOT NULL DEFAULT 0
-          CHECK (is_read IN (0, 1)),
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id)
-          REFERENCES users(id) ON DELETE CASCADE
-      );
-    `);
-  }
+  await assertNotificationRouteFails("/api/notifications");
 });
+
 test("Mark notification as read handles a database failure", async () => {
-  db.pragma("query_only = ON");
-
-  try {
-    const response = await apiRequest(
-      "PATCH",
-      "/api/notifications/notification-1/read",
-      tokens.employeeA
-    );
-
-    const result = await response.json();
-
-    assert.equal(response.status, 500);
-    assert.deepEqual(result, {
-      success: false,
-      message: "Internal server error"
-    });
-  } finally {
-    db.pragma("query_only = OFF");
-  }
+  await assertNotificationRouteFails("/api/notifications/notification-1/read", "PATCH");
 });
+
 test("Mark all notifications as read handles a database failure", async () => {
-  db.pragma("query_only = ON");
-
-  try {
-    const response = await apiRequest(
-      "PATCH",
-      "/api/notifications/read-all",
-      tokens.employeeA
-    );
-
-    const result = await response.json();
-
-    assert.equal(response.status, 500);
-    assert.deepEqual(result, {
-      success: false,
-      message: "Internal server error"
-    });
-  } finally {
-    db.pragma("query_only = OFF");
-  }
+  await assertNotificationRouteFails("/api/notifications/read-all", "PATCH");
 });
+
 test("Ticket status change creates a notification for the requester", async () => {
   const response = await apiRequest(
     "PUT",
@@ -1882,17 +1885,7 @@ test("Ticket status change creates a notification for the requester", async () =
   assert.equal(response.status, 200);
   assert.equal(result.success, true);
 
-  const notification = db.prepare(`
-    SELECT *
-    FROM notifications
-    WHERE user_id = ?
-      AND ticket_id = ?
-      AND type = ?
-  `).get(
-    users.employeeB.id,
-    String(ticketId),
-    "STATUS_CHANGED"
-  );
+  const notification = findTestNotification({ userId: users.employeeB.id, ticketId, type: "STATUS_CHANGED" });
 
   assert.ok(notification);
   assert.equal(notification.title, "Ticket status updated");
@@ -1912,17 +1905,7 @@ test("Ticket priority change creates a notification for the requester", async ()
   assert.equal(response.status, 200);
   assert.equal(result.success, true);
 
-  const notification = db.prepare(`
-    SELECT *
-    FROM notifications
-    WHERE user_id = ?
-      AND ticket_id = ?
-      AND type = ?
-  `).get(
-    users.employeeB.id,
-    String(ticketId),
-    "PRIORITY_CHANGED"
-  );
+  const notification = findTestNotification({ userId: users.employeeB.id, ticketId, type: "PRIORITY_CHANGED" });
 
   assert.ok(notification);
   assert.equal(notification.title, "Ticket priority updated");
@@ -1940,17 +1923,7 @@ test("Resolving a ticket creates a resolved notification for the requester", asy
   assert.equal(response.status, 200);
   assert.equal(result.success, true);
 
-  const notification = db.prepare(`
-    SELECT *
-    FROM notifications
-    WHERE user_id = ?
-      AND ticket_id = ?
-      AND type = ?
-  `).get(
-    users.employeeB.id,
-    String(ticketId),
-    "TICKET_RESOLVED"
-  );
+  const notification = findTestNotification({ userId: users.employeeB.id, ticketId, type: "TICKET_RESOLVED" });
 
   assert.ok(notification);
   assert.equal(notification.title, "Your ticket was resolved");
@@ -2209,7 +2182,11 @@ test("Activity history handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
 
   // Simulate a DynamoDB failure.
-  dynamoDB.send = async () => {
+  dynamoDB.send = async (command) => {
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
+    }
     throw new Error("Simulated activity history failure");
   };
 
@@ -2237,7 +2214,11 @@ test("Activity history handles a DynamoDB failure", async () => {
 test("Ticket update handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
 
-  dynamoDB.send = async () => {
+  dynamoDB.send = async (command) => {
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
+    }
     throw new Error("Simulated ticket update failure");
   };
 
@@ -2265,17 +2246,17 @@ test("Ticket assignment handles a DynamoDB failure", async () => {
   const originalMockSend = dynamoDB.send;
 
   dynamoDB.send = async (command) => {
-    if (command.constructor.name === "GetCommand") {
-      return {
-        Item: { ...originalTicket }
-      };
+    if (command.constructor.name === "ScanCommand" &&
+        command.input?.ExpressionAttributeValues?.[":userType"] === "USER") {
+      return originalMockSend(command);
     }
-
+    if (command.constructor.name === "GetCommand") {
+      return { Item: structuredClone(originalTicket) };
+    }
     if (command.constructor.name === "PutCommand") {
       throw new Error("Simulated ticket assignment failure");
     }
-
-    throw new Error("Unexpected DynamoDB command");
+    return originalMockSend(command);
   };
 
   try {
