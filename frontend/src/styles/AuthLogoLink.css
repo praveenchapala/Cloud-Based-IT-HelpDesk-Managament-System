@@ -1,0 +1,7 @@
+/* Auth-page ResolveIT logo navigation */
+.auth-login-brand { transition: opacity 180ms ease, transform 180ms ease; }
+.auth-login-brand:hover { opacity: 0.94; transform: translateY(-1px); }
+.auth-login-mobile-brand-link { color: inherit; text-decoration: none; transition: opacity 180ms ease; }
+.auth-login-mobile-brand-link:hover { opacity: 0.9; }
+.auth-login-brand:focus-visible, .auth-login-mobile-brand-link:focus-visible { outline: 3px solid #7895ff; outline-offset: 5px; border-radius: 8px; }
+@media (prefers-reduced-motion: reduce) { .auth-login-brand, .auth-login-mobile-brand-link { transition: none; } }

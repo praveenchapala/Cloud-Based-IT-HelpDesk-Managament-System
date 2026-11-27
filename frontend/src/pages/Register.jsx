@@ -1,4 +1,5 @@
 import { useState } from "react";
+import "../styles/AuthLogoLink.css";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Activity,
@@ -63,7 +64,7 @@ export default function Register() {
   return (
     <main className="auth-login-page auth-register-page">
       <section className="auth-login-brand-panel" aria-label="ResolveIT introduction">
-        <Link to="/login" className="auth-login-brand" aria-label="ResolveIT sign in">
+        <Link to="/" className="auth-login-brand" aria-label="Go to ResolveIT landing page">
           <span className="auth-login-brand-mark">
             <Headphones size={27} strokeWidth={2.2} />
           </span>
@@ -99,10 +100,10 @@ export default function Register() {
 
       <section className="auth-login-form-panel" aria-label="Create employee account">
         <div className="auth-login-form-wrap auth-register-form-wrap">
-          <div className="auth-login-mobile-brand">
+          <Link to="/" className="auth-login-mobile-brand auth-login-mobile-brand-link" aria-label="Go to ResolveIT landing page">
             <span className="auth-login-brand-mark"><Headphones size={23} /></span>
             <span>ResolveIT<small>IT SERVICE DESK</small></span>
-          </div>
+          </Link>
 
           <header className="auth-login-heading">
             <p className="auth-login-kicker">JOIN YOUR WORKSPACE</p>
