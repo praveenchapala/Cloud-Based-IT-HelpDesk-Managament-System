@@ -490,8 +490,8 @@ html {
 
 body {
   min-height: 100vh;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .app-shell {
@@ -1880,8 +1880,8 @@ html {
 
 body {
   min-height: 100vh;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .app-shell {
@@ -2434,8 +2434,8 @@ html {
 
 body {
   min-height: 100vh;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .app-shell {
@@ -3076,8 +3076,8 @@ html {
 
 body {
   min-height: 100vh;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .app-shell {
@@ -3238,7 +3238,7 @@ body,
 }
 
 body {
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 .app-shell {
